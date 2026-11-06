@@ -11,8 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/dev-toolings/mcp-electron/internal/electron"
-	"github.com/dev-toolings/mcp-electron/internal/engine"
+	"github.com/dev-toolings/mcp-app-desktop/internal/desktop"
+	"github.com/dev-toolings/mcp-app-desktop/internal/driver"
+	"github.com/dev-toolings/mcp-app-desktop/internal/engine"
 	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/proto"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
@@ -25,15 +26,15 @@ func TestStatusTextNeverPanics(t *testing.T) {
 	now := time.Now()
 	cases := []struct {
 		name string
-		st   electron.Status
-		wins []engine.WindowInfo
+		st   desktop.Status
+		wins []driver.WindowInfo
 		err  error
 		want string
 	}{
-		{"reconnected without a restart time", electron.Status{Info: electron.Info{ID: "s1"}, State: electron.StateRunning, Generation: 3}, nil, nil, "restarts=2\n  no window open"},
-		{"restart time known", electron.Status{Info: electron.Info{ID: "s1"}, State: electron.StateRunning, Generation: 2, Restarts: []time.Time{now}}, []engine.WindowInfo{{Index: 0, Type: "page", Title: "App", URL: "app://x"}}, nil, "restarts=1 (last " + now.Format("15:04:05") + ")\n  window 0: \"App\" app://x"},
-		{"restarting", electron.Status{Info: electron.Info{ID: "s7"}, State: electron.StateRestarting, Generation: 1}, nil, nil, "state=restarting"},
-		{"zero generation", electron.Status{Info: electron.Info{ID: "s1"}, State: electron.StateRunning}, nil, errors.New("list targets: closed"), "windows: list targets: closed"},
+		{"reconnected without a restart time", desktop.Status{Info: desktop.Info{ID: "s1"}, State: desktop.StateRunning, Generation: 3}, nil, nil, "restarts=2\n  no window open"},
+		{"restart time known", desktop.Status{Info: desktop.Info{ID: "s1"}, State: desktop.StateRunning, Generation: 2, Restarts: []time.Time{now}}, []driver.WindowInfo{{Index: 0, Type: "page", Title: "App", URL: "app://x"}}, nil, "restarts=1 (last " + now.Format("15:04:05") + ")\n  window 0: \"App\" app://x"},
+		{"restarting", desktop.Status{Info: desktop.Info{ID: "s7"}, State: desktop.StateRestarting, Generation: 1}, nil, nil, "state=restarting"},
+		{"zero generation", desktop.Status{Info: desktop.Info{ID: "s1"}, State: desktop.StateRunning}, nil, errors.New("list targets: closed"), "windows: list targets: closed"},
 	}
 	for _, c := range cases {
 		got := statusText(c.st, c.wins, c.err)
@@ -51,7 +52,7 @@ func chromeOn(t *testing.T, port int) (stop func()) {
 	if !ok {
 		t.Skip("no Chrome/Chromium installed")
 	}
-	dir, err := os.MkdirTemp("", "mcp-electron-restart-chrome-*")
+	dir, err := os.MkdirTemp("", "mcp-app-desktop-restart-chrome-*")
 	if err != nil {
 		t.Fatal(err)
 	}

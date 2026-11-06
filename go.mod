@@ -1,4 +1,4 @@
-module github.com/dev-toolings/mcp-electron
+module github.com/dev-toolings/mcp-app-desktop
 
 go 1.26
 

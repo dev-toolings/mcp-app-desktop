@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Tauri Fixture</title>
+    <style>
+      body { font-family: -apple-system, system-ui, sans-serif; margin: 24px; }
+      form { display: grid; grid-template-columns: max-content 240px; gap: 8px 12px; align-items: center; }
+      #rows { list-style: none; padding: 0; width: 320px; }
+      #rows li { display: flex; justify-content: space-between; padding: 6px 8px; border-bottom: 1px solid #ddd; }
+      #rows li .delete { opacity: 0; transition: opacity 0.1s; }
+      #rows li:hover .delete { opacity: 1; }
+      #tall { height: 2000px; position: relative; border-left: 4px solid #ccc; }
+      #tall .bottom { position: absolute; bottom: 8px; left: 12px; }
+    </style>
+  </head>
+  <body>
+    <h1>Tauri Fixture</h1>
+
+    <form id="profile">
+      <label for="name">Name</label>
+      <input id="name" type="text" />
+      <label for="email">Email</label>
+      <input id="email" type="email" />
+      <label for="color">Color</label>
+      <select id="color">
+        <option value="red">Red</option>
+        <option value="green">Green</option>
+        <option value="blue">Blue</option>
+      </select>
+      <label for="subscribe">Subscribe</label>
+      <input id="subscribe" type="checkbox" />
+      <button id="greet" type="submit">Greet</button>
+      <button id="fail" type="button">Fail</button>
+    </form>
+    <p id="out"></p>
+
+    <p>
+      <input id="search" type="text" placeholder="Search" />
+      <span id="live"></span>
+    </p>
+
+    <ul id="rows">
+      <li><span>Row 1</span><button class="delete" type="button">Delete</button></li>
+      <li><span>Row 2</span><button class="delete" type="button">Delete</button></li>
+      <li><span>Row 3</span><button class="delete" type="button">Delete</button></li>
+    </ul>
+
+    <button id="open-second" type="button">Open second window</button>
+
+    <div id="tall">
+      <div class="bottom">
+        <button id="bottom" type="button">Bottom</button>
+        <span>Clicks: <span id="bottom-count">0</span></span>
+      </div>
+    </div>
+
+    <script>
+      const invoke = window.__TAURI__.core.invoke;
+
+      document.getElementById('profile').addEventListener('submit', async (ev) => {
+        ev.preventDefault();
+        const result = await invoke('greet', { name: document.getElementById('name').value });
+        document.getElementById('out').textContent = result;
+        console.log('greeted', result);
+      });
+
+      document.getElementById('fail').addEventListener('click', async () => {
+        try {
+          await invoke('fail');
+        } catch (err) {
+          console.error('fail rejected', err);
+        }
+      });
+
+      document.getElementById('search').addEventListener('input', (ev) => {
+        document.getElementById('live').textContent = ev.target.value;
+      });
+
+      document.getElementById('rows').addEventListener('click', (ev) => {
+        const button = ev.target.closest('button.delete');
+        if (button) button.closest('li').remove();
+      });
+
+      document.getElementById('open-second').addEventListener('click', () => {
+        const second = new window.__TAURI__.webviewWindow.WebviewWindow('second', {
+          url: 'second.html',
+          title: 'Second',
+        });
+        second.once('tauri://error', (ev) => console.error('second window failed', ev.payload));
+      });
+
+      let bottomClicks = 0;
+      document.getElementById('bottom').addEventListener('click', () => {
+        bottomClicks += 1;
+        document.getElementById('bottom-count').textContent = String(bottomClicks);
+      });
+    </script>
+  </body>
+</html>

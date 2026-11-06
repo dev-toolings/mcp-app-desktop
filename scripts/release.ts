@@ -18,18 +18,18 @@ import { join } from "node:path";
 const ROOT = join(import.meta.dir, "..");
 const DIST = join(ROOT, "dist");
 const SCOPE = "@dev-toolings";
-const MAIN = `${SCOPE}/mcp-electron`;
+const MAIN = `${SCOPE}/mcp-app-desktop`;
 const PLUGIN_DIR = join(ROOT, "plugin");
 const PLUGIN_JSON = join(PLUGIN_DIR, ".claude-plugin/plugin.json");
 const MCP_JSON = join(PLUGIN_DIR, ".mcp.json");
-// One command for every OS: macOS runs the universal binary bin/mcp-electron,
-// Windows resolves the extension-less name to bin/mcp-electron.exe.
-const PLUGIN_COMMAND = "${CLAUDE_PLUGIN_ROOT}/bin/mcp-electron";
+// One command for every OS: macOS runs the universal binary bin/mcp-app-desktop,
+// Windows resolves the extension-less name to bin/mcp-app-desktop.exe.
+const PLUGIN_COMMAND = "${CLAUDE_PLUGIN_ROOT}/bin/mcp-app-desktop";
 const DIST_BRANCH = "dist";
-const NPM_MAIN = join(ROOT, "npm/mcp-electron");
+const NPM_MAIN = join(ROOT, "npm/mcp-app-desktop");
 const SEMVER = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/;
 
-// Keep in sync with TARGETS in npm/mcp-electron/bin/mcp-electron.js.
+// Keep in sync with TARGETS in npm/mcp-app-desktop/bin/mcp-app-desktop.js.
 const TARGETS = [
   { key: "darwin-arm64", goos: "darwin", goarch: "arm64", os: "darwin", cpu: "arm64", label: "macOS arm64" },
   { key: "darwin-x64", goos: "darwin", goarch: "amd64", os: "darwin", cpu: "x64", label: "macOS x64" },
@@ -38,7 +38,7 @@ const TARGETS = [
 ] as const;
 type Target = (typeof TARGETS)[number];
 
-const exe = (t: Target) => (t.goos === "windows" ? "mcp-electron.exe" : "mcp-electron");
+const exe = (t: Target) => (t.goos === "windows" ? "mcp-app-desktop.exe" : "mcp-app-desktop");
 const platformPackage = (t: Target) => `${MAIN}-${t.key}`;
 
 function die(message: string): never {
@@ -91,7 +91,7 @@ async function check(tag: string | undefined) {
   const v = (await readJSON(PLUGIN_JSON)).version as string;
   if (!SEMVER.test(v)) errors.push(`plugin.json version ${JSON.stringify(v)} is not semver`);
 
-  const command = (await readJSON(MCP_JSON)).mcpServers?.["mcp-electron"]?.command;
+  const command = (await readJSON(MCP_JSON)).mcpServers?.["mcp-app-desktop"]?.command;
   if (command !== PLUGIN_COMMAND) errors.push(`plugin/.mcp.json must run ${PLUGIN_COMMAND} (command: ${JSON.stringify(command)})`);
 
   const pkg = await readJSON(join(NPM_MAIN, "package.json"));
@@ -120,7 +120,7 @@ async function build(v: string) {
           "go", "build", "-trimpath",
           "-ldflags", `-s -w -X main.version=${v}`,
           "-o", join(DIST, "bin", t.key, exe(t)),
-          "./cmd/mcp-electron",
+          "./cmd/mcp-app-desktop",
         ],
         { env: { CGO_ENABLED: "0", GOOS: t.goos, GOARCH: t.goarch } },
       ),
@@ -141,14 +141,14 @@ async function stage(v: string) {
   for (const t of TARGETS) {
     const src = join(DIST, "bin", t.key, exe(t));
     if (!(await Bun.file(src).exists())) die(`${src} missing; run build ${v} first`);
-    const dir = join(npmDir, `mcp-electron-${t.key}`);
+    const dir = join(npmDir, `mcp-app-desktop-${t.key}`);
     await mkdir(join(dir, "bin"), { recursive: true });
     await cp(src, join(dir, "bin", exe(t)));
     await chmod(join(dir, "bin", exe(t)), 0o755);
     await writeJSON(join(dir, "package.json"), {
       name: platformPackage(t),
       version: v,
-      description: `mcp-electron binary for ${t.label}. Install ${MAIN} instead.`,
+      description: `mcp-app-desktop binary for ${t.label}. Install ${MAIN} instead.`,
       repository,
       os: [t.os],
       cpu: [t.cpu],
@@ -156,14 +156,14 @@ async function stage(v: string) {
       preferUnplugged: true,
     });
 
-    const archive = join(relDir, `mcp-electron_${v}_${t.key}${t.goos === "windows" ? ".zip" : ".tar.gz"}`);
+    const archive = join(relDir, `mcp-app-desktop_${v}_${t.key}${t.goos === "windows" ? ".zip" : ".tar.gz"}`);
     if (t.goos === "windows") await run(["zip", "-jq", archive, src]);
     else await run(["tar", "-czf", archive, "-C", join(DIST, "bin", t.key), exe(t)]);
   }
 
-  const main = join(npmDir, "mcp-electron");
+  const main = join(npmDir, "mcp-app-desktop");
   await cp(NPM_MAIN, main, { recursive: true });
-  await chmod(join(main, "bin", "mcp-electron.js"), 0o755);
+  await chmod(join(main, "bin", "mcp-app-desktop.js"), 0o755);
   await cp(join(ROOT, "README.md"), join(main, "README.md"));
 
   const sums: string[] = [];
@@ -224,12 +224,12 @@ async function plugin(v: string) {
   await mkdir(join(out, "bin"), { recursive: true });
   await cp(join(PLUGIN_DIR, ".claude-plugin"), join(out, ".claude-plugin"), { recursive: true });
   await cp(MCP_JSON, join(out, ".mcp.json"));
-  await cp(join(PLUGIN_DIR, "skills/mcp-electron"), join(out, "skills/mcp-electron"), { recursive: true });
+  await cp(join(PLUGIN_DIR, "skills/mcp-app-desktop"), join(out, "skills/mcp-app-desktop"), { recursive: true });
 
-  const mac = join(out, "bin", "mcp-electron");
+  const mac = join(out, "bin", "mcp-app-desktop");
   await Bun.write(mac, universal([await binary("darwin-x64", v), await binary("darwin-arm64", v)]));
   await chmod(mac, 0o755);
-  await Bun.write(join(out, "bin", "mcp-electron.exe"), await binary("win32-x64", v));
+  await Bun.write(join(out, "bin", "mcp-app-desktop.exe"), await binary("win32-x64", v));
   console.log(`assembled plugin ${v} in ${out}`);
 }
 
@@ -252,7 +252,7 @@ async function pushPlugin(v: string) {
   git(["-C", dir, "--work-tree", ".", "add", "--all", "--force", "."], env);
   const tree = git(["write-tree"], env);
   const source = git(["rev-parse", "HEAD"]);
-  const commit = git(["commit-tree", tree, "-m", `mcp-electron ${v}\n\nBuilt from ${source}.`], {
+  const commit = git(["commit-tree", tree, "-m", `mcp-app-desktop ${v}\n\nBuilt from ${source}.`], {
     GIT_AUTHOR_NAME: "github-actions[bot]",
     GIT_AUTHOR_EMAIL: "41898282+github-actions[bot]@users.noreply.github.com",
     GIT_COMMITTER_NAME: "github-actions[bot]",
@@ -276,7 +276,7 @@ async function publish(v: string) {
   // Platform packages first: the main package must never resolve to an
   // optional dependency that is not on the registry yet. Re-running after a
   // partial failure skips what is already published.
-  const dirs = [...TARGETS.map((t) => [platformPackage(t), `mcp-electron-${t.key}`]), [MAIN, "mcp-electron"]];
+  const dirs = [...TARGETS.map((t) => [platformPackage(t), `mcp-app-desktop-${t.key}`]), [MAIN, "mcp-app-desktop"]];
   for (const [name, dir] of dirs) {
     if (await published(name, v)) {
       console.log(`skip ${name}@${v}: already published`);

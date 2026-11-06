@@ -1,7 +1,7 @@
 # Escape: finish the first-run setup without importing projects, create an
 # agent from scratch and check it appears in the team. Run against an
 # isolated Escape (never your real profile):
-#   mcp-electron run-flow examples/flows/escape-create-agent.yaml \
+#   mcp-app-desktop run-flow examples/flows/escape-create-agent.yaml \
 #     --target ~/Documents/lab/sandbox/escape --env ESCAPE_TEST_DATA=$(mktemp -d /tmp/esc-XXXX)
 # Sends no message to any model.
 name: Escape — créer un agent

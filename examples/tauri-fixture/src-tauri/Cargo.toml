@@ -1,0 +1,20 @@
+[package]
+name = "tauri-fixture"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Minimal Tauri 2 app driven by the mcp-app-desktop end-to-end tests"
+
+# Standalone: never join a parent workspace.
+[workspace]
+
+[[bin]]
+name = "tauri-fixture"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-mcp-app-desktop = { path = "../../../crates/tauri-plugin-mcp-app-desktop" }

@@ -14,19 +14,20 @@ import (
 )
 
 // TestEndToEndElectron drives a real Electron application through the tool
-// handlers. Opt in with MCP_ELECTRON_E2E_TARGET=<project dir|.app>; extra
-// application env in MCP_ELECTRON_E2E_ENV ("A=1,B=2"); an optional flow in
-// MCP_ELECTRON_E2E_FLOW.
+// handlers. Opt in with MCP_APP_DESKTOP_E2E_TARGET=<project dir|.app>; extra
+// application env in MCP_APP_DESKTOP_E2E_ENV ("A=1,B=2"); an optional flow in
+// MCP_APP_DESKTOP_E2E_FLOW.
 func TestEndToEndElectron(t *testing.T) {
-	target := os.Getenv("MCP_ELECTRON_E2E_TARGET")
+	target := os.Getenv("MCP_APP_DESKTOP_E2E_TARGET")
 	if target == "" {
-		t.Skip("set MCP_ELECTRON_E2E_TARGET to an Electron project or .app")
+		t.Skip("set MCP_APP_DESKTOP_E2E_TARGET to an Electron project or .app")
 	}
 	s, err := New(Options{ArtifactsRoot: t.TempDir(), Version: "test"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()
+	s.Build()
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
 
@@ -67,7 +68,7 @@ func TestEndToEndElectron(t *testing.T) {
 	}
 
 	env := map[string]any{}
-	for _, kv := range strings.Split(os.Getenv("MCP_ELECTRON_E2E_ENV"), ",") {
+	for _, kv := range strings.Split(os.Getenv("MCP_APP_DESKTOP_E2E_ENV"), ",") {
 		if k, v, ok := strings.Cut(kv, "="); ok {
 			env[k] = v
 		}
@@ -75,6 +76,9 @@ func TestEndToEndElectron(t *testing.T) {
 	out := call("launch", map[string]any{"target": target, "env": env})
 	if !strings.Contains(out, "Launched") {
 		t.Fatalf("unexpected launch output: %s", out)
+	}
+	if !listed(s, "eval_main") || listed(s, "invoke") || listed(s, "emit") {
+		t.Fatal("an Electron session lists eval_main, not invoke or emit")
 	}
 	call("status", nil)
 	wins := call("windows", nil)
@@ -101,13 +105,16 @@ func TestEndToEndElectron(t *testing.T) {
 	}
 	call("logs", map[string]any{"last": 20})
 	call("press", map[string]any{"key": "Escape"})
-	if flowFile := os.Getenv("MCP_ELECTRON_E2E_FLOW"); flowFile != "" {
+	if flowFile := os.Getenv("MCP_APP_DESKTOP_E2E_FLOW"); flowFile != "" {
 		abs, _ := filepath.Abs(flowFile)
 		call("run_flow", map[string]any{"file": abs})
 	}
 	stop := call("stop", nil)
 	if !strings.Contains(stop, "closed") {
 		t.Fatalf("stop: %s", stop)
+	}
+	if listed(s, "eval_main") {
+		t.Fatal("eval_main must be unlisted once no Electron session is open")
 	}
 }
 

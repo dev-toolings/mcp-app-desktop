@@ -9,19 +9,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dev-toolings/mcp-electron/internal/engine"
-	"github.com/go-rod/rod"
-	"github.com/go-rod/rod/lib/proto"
+	"github.com/dev-toolings/mcp-app-desktop/internal/driver"
+	"github.com/dev-toolings/mcp-app-desktop/internal/engine"
 )
 
-// Runner executes flows against one window.
+// Runner executes flows against one window, whatever drives it (CDP or the
+// Tauri bridge).
 type Runner struct {
-	Browser *engine.Browser
-	Page    *rod.Page
-	// Main evaluates JavaScript in the main process (nil when unavailable).
+	Window driver.Window
+	// Main evaluates JavaScript in the Electron main process (nil when
+	// unavailable: a Tauri app, or no inspector).
 	Main func(ctx context.Context, expr string) (string, error)
-	// Press dispatches a key combination.
-	Press func(page *rod.Page, combo string) error
 	// OutDir receives screenshots (takeScreenshot and failure captures).
 	// Empty disables writing them.
 	OutDir string
@@ -31,6 +29,10 @@ type Runner struct {
 	LookupTimeout time.Duration
 	// Launch handles launchApp; nil makes launchApp a no-op.
 	Launch func(ctx context.Context) error
+
+	// ctx is the context of the step being run, for the helpers that do
+	// not receive it.
+	ctx context.Context
 }
 
 // StepResult is the outcome of one executed command.
@@ -137,6 +139,7 @@ func (r *Runner) run(ctx context.Context, steps []Step, env map[string]string, p
 			continue
 		}
 		t0 := time.Now()
+		r.ctx = ctx
 		sr := StepResult{Index: idx, Command: s.Command, Label: s.Label, Line: s.Line}
 		detail, shot, err := r.exec(ctx, s, env)
 		sr.DurationMS = time.Since(t0).Milliseconds()
@@ -164,8 +167,7 @@ func (r *Runner) run(ctx context.Context, steps []Step, env map[string]string, p
 }
 
 func (r *Runner) captureFailure(idx string, res *Result) {
-	if result, err := engine.Extract(r.Page, engine.LevelSkeleton, ""); err == nil {
-		_ = r.Browser.SaveSnapshot(r.Page, result)
+	if result, err := r.Window.Snapshot(r.context(), engine.LevelSkeleton, ""); err == nil {
 		res.FailureScreen = strings.TrimRight(engine.FormatTextProfile(result, engine.RenderProfile{Agent: true, Format: "text", MaxLabelLen: 80, AbbrevRoles: true}), "\n")
 	}
 	if p, err := r.screenshot("failure-step-" + strings.ReplaceAll(idx, ".", "_")); err == nil {
@@ -183,24 +185,25 @@ func (r *Runner) lookup(s Step) time.Duration {
 	return 10 * time.Second
 }
 
-// settle gives the UI a moment to react after an action, bounded.
-func (r *Runner) settle() {
-	_ = engine.WaitForImminentDOM(r.Page, 150*time.Millisecond)
+// context is the context of the step being run (Background before Run).
+func (r *Runner) context() context.Context {
+	if r.ctx != nil {
+		return r.ctx
+	}
+	return context.Background()
 }
 
-func (r *Runner) find(target string, timeout time.Duration) (*rod.Element, error) {
-	el, err := engine.WaitForTarget(r.Page, target, r.Browser.Snapshot(r.Page), engine.StateVisible, timeout)
-	if err != nil {
-		return nil, err
-	}
-	if el == nil {
-		return nil, fmt.Errorf("%s: not found", target)
-	}
-	return el, nil
+// settle gives the UI a moment to react after an action, bounded.
+func (r *Runner) settle() {
+	r.Window.Settle(r.context(), 150*time.Millisecond)
+}
+
+func (r *Runner) find(target string, timeout time.Duration) error {
+	return r.Window.Find(r.context(), target, engine.StateVisible, timeout)
 }
 
 func (r *Runner) exec(ctx context.Context, s Step, env map[string]string) (detail, shot string, err error) {
-	page := r.Page
+	w := r.Window
 	switch s.Command {
 	case "launchApp":
 		if r.Launch != nil {
@@ -213,77 +216,45 @@ func (r *Runner) exec(ctx context.Context, s Step, env map[string]string) (detai
 			if err != nil {
 				return "", "", err
 			}
-			if err := page.Mouse.MoveTo(proto.Point{X: x, Y: y}); err != nil {
-				return "", "", err
-			}
-			if err := page.Mouse.Click(proto.InputMouseButtonLeft, max(s.Count, 1)); err != nil {
+			if err := w.ClickAt(ctx, x, y, max(s.Count, 1)); err != nil {
 				return "", "", err
 			}
 			r.settle()
 			return fmt.Sprintf("tapped %.0f,%.0f", x, y), "", nil
 		}
 		target := Expand(s.Target, env)
-		el, err := r.find(target, r.lookup(s))
-		if err != nil {
-			return "", "", err
-		}
-		if err := engine.EnsureActionable(el, r.lookup(s)); err != nil {
-			return "", "", fmt.Errorf("%s: %w", target, err)
-		}
-		if s.Count == 2 {
-			box, err := el.Shape()
-			if err != nil {
-				return "", "", err
-			}
-			rc := box.Box()
-			if rc == nil {
-				return "", "", fmt.Errorf("%s has no visible box", target)
-			}
-			if err := page.Mouse.MoveTo(proto.Point{X: rc.X + rc.Width/2, Y: rc.Y + rc.Height/2}); err != nil {
-				return "", "", err
-			}
-			if err := page.Mouse.Click(proto.InputMouseButtonLeft, 2); err != nil {
-				return "", "", err
-			}
-		} else if err := engine.ClickElementWithButton(page, el, proto.InputMouseButtonLeft); err != nil {
+		if _, err := w.Click(ctx, target, driver.ClickOptions{Count: max(s.Count, 1), Hover: driver.HoverNever, Timeout: r.lookup(s)}); err != nil {
 			return "", "", err
 		}
 		r.settle()
 		return target, "", nil
 	case "assertVisible":
 		target := Expand(s.Target, env)
-		if _, err := r.find(target, r.lookup(s)); err != nil {
+		if err := r.find(target, r.lookup(s)); err != nil {
 			return "", "", err
 		}
 		return target, "", nil
 	case "assertNotVisible":
 		target := Expand(s.Target, env)
-		el, err := engine.WaitForTarget(page, target, r.Browser.Snapshot(page), engine.StateHidden, r.lookup(s))
-		if err != nil {
+		if err := w.Find(ctx, target, engine.StateHidden, r.lookup(s)); err != nil {
 			return "", "", err
-		}
-		if el != nil {
-			return "", "", fmt.Errorf("%s is still visible", target)
 		}
 		return target + " not visible", "", nil
 	case "inputText":
-		if err := engine.TypeFocused(page, Expand(s.Text, env)); err != nil {
+		if err := w.Type(ctx, "", Expand(s.Text, env), driver.TypeOptions{}); err != nil {
 			return "", "", err
 		}
 		r.settle()
 		return "", "", nil
 	case "eraseText":
 		for i := 0; i < s.Count; i++ {
-			if err := page.Keyboard.Type(input("Backspace")); err != nil {
+			if err := w.Press(ctx, "", "Backspace", 0); err != nil {
 				return "", "", err
 			}
 		}
 		return "", "", nil
 	case "pressKey":
-		if r.Press == nil {
-			return "", "", fmt.Errorf("pressKey is not available")
-		}
-		if err := r.Press(page, Expand(s.Key, env)); err != nil {
+		if err := w.Press(ctx, "", Expand(s.Key, env), 0); err != nil {
 			return "", "", err
 		}
 		r.settle()
@@ -293,37 +264,33 @@ func (r *Runner) exec(ctx context.Context, s Step, env map[string]string) (detai
 		if s.Direction == "UP" {
 			dy = -dy
 		}
-		_, err := engine.ScrollBy(page, dy)
+		_, err := w.ScrollBy(ctx, 0, dy)
 		return "", "", err
 	case "scrollUntilVisible":
 		return r.scrollUntil(ctx, s, env)
 	case "waitForAnimationToEnd":
-		if err := engine.WaitForPage(page, "stable"); err != nil {
+		if err := w.WaitLoad(ctx, "stable"); err != nil {
 			return "", "", err
 		}
 		return "settled", "", nil
 	case "extendedWaitUntil":
 		if s.Visible != "" {
 			target := Expand(s.Visible, env)
-			if _, err := r.find(target, r.lookup(s)); err != nil {
+			if err := r.find(target, r.lookup(s)); err != nil {
 				return "", "", err
 			}
 			return target, "", nil
 		}
 		target := Expand(s.NotVisible, env)
-		el, err := engine.WaitForTarget(page, target, r.Browser.Snapshot(page), engine.StateHidden, r.lookup(s))
-		if err != nil {
+		if err := w.Find(ctx, target, engine.StateHidden, r.lookup(s)); err != nil {
 			return "", "", err
-		}
-		if el != nil {
-			return "", "", fmt.Errorf("%s is still visible", target)
 		}
 		return "", "", nil
 	case "takeScreenshot":
 		p, err := r.screenshot(Expand(s.Text, env))
 		return "", p, err
 	case "evalJs", "assertJs":
-		v, err := engine.EvalJSTimeout(page, Expand(s.Text, env), "", nil, 8*time.Second)
+		v, err := w.Eval(ctx, Expand(s.Text, env), "", 8*time.Second)
 		if err != nil {
 			return "", "", err
 		}
@@ -333,7 +300,7 @@ func (r *Runner) exec(ctx context.Context, s Step, env map[string]string) (detai
 		return v, "", nil
 	case "evalMain", "assertMain":
 		if r.Main == nil {
-			return "", "", fmt.Errorf("%s needs the main process inspector (launch with inspect: true)", s.Command)
+			return "", "", fmt.Errorf("%s needs an Electron app with its main process inspector (launch with inspect: true); a Tauri app has no JavaScript main process", s.Command)
 		}
 		v, err := r.Main(ctx, Expand(s.Text, env))
 		if err != nil {
@@ -348,11 +315,11 @@ func (r *Runner) exec(ctx context.Context, s Step, env map[string]string) (detai
 }
 
 func (r *Runner) scrollStep() int {
-	v, err := r.Page.Eval(`() => Math.max(100, Math.floor(window.innerHeight / 2))`)
-	if err != nil {
+	_, h, err := r.Window.Viewport(r.context())
+	if err != nil || h <= 0 {
 		return 300
 	}
-	return v.Value.Int()
+	return max(100, int(h/2))
 }
 
 func (r *Runner) scrollUntil(ctx context.Context, s Step, env map[string]string) (string, string, error) {
@@ -364,36 +331,31 @@ func (r *Runner) scrollUntil(ctx context.Context, s Step, env map[string]string)
 	deadline := time.Now().Add(timeout)
 	prev := -1.0
 	for {
-		if el, err := engine.WaitForTarget(r.Page, target, r.Browser.Snapshot(r.Page), engine.StateVisible, 0); err == nil && el != nil {
+		if err := r.Window.Find(ctx, target, engine.StateVisible, 0); err == nil {
 			return target, "", nil
 		}
-		pos, err := r.Page.Eval(`() => window.scrollY + window.scrollX`)
-		if err != nil {
-			return "", "", err
-		}
-		if pos.Value.Num() == prev {
-			return "", "", fmt.Errorf("reached the end of the scrollable area without finding %s", target)
-		}
-		prev = pos.Value.Num()
 		if !time.Now().Before(deadline) || ctx.Err() != nil {
 			return "", "", fmt.Errorf("%s did not become visible within %s", target, timeout)
 		}
 		step := r.scrollStep()
-		var js string
+		dx, dy := 0, step
 		switch s.Direction {
 		case "UP":
-			js = fmt.Sprintf(`() => window.scrollBy(0, -%d)`, step)
+			dy = -step
 		case "RIGHT":
-			js = fmt.Sprintf(`() => window.scrollBy(%d, 0)`, step)
+			dx, dy = step, 0
 		case "LEFT":
-			js = fmt.Sprintf(`() => window.scrollBy(-%d, 0)`, step)
-		default:
-			js = fmt.Sprintf(`() => window.scrollBy(0, %d)`, step)
+			dx, dy = -step, 0
 		}
-		if _, err := r.Page.Eval(js); err != nil {
+		pos, err := r.Window.ScrollBy(ctx, dx, dy)
+		if err != nil {
 			return "", "", err
 		}
-		_ = engine.WaitForImminentDOM(r.Page, 200*time.Millisecond)
+		if pos == prev {
+			return "", "", fmt.Errorf("reached the end of the scrollable area without finding %s", target)
+		}
+		prev = pos
+		r.Window.Settle(ctx, 200*time.Millisecond)
 	}
 }
 
@@ -405,13 +367,9 @@ func (r *Runner) point(p string) (float64, float64, error) {
 	}
 	var w, h float64
 	if strings.Contains(p, "%") {
-		v, err := r.Page.Eval(`() => [window.innerWidth, window.innerHeight]`)
-		if err != nil {
+		var err error
+		if w, h, err = r.Window.Viewport(r.context()); err != nil {
 			return 0, 0, err
-		}
-		arr := v.Value.Arr()
-		if len(arr) == 2 {
-			w, h = arr[0].Num(), arr[1].Num()
 		}
 	}
 	var xy [2]float64
@@ -441,10 +399,11 @@ func (r *Runner) screenshot(name string) (string, error) {
 	if r.OutDir == "" {
 		return "", fmt.Errorf("no output directory for screenshots")
 	}
-	data, err := engine.TakeScreenshotFormat(r.Page, false, "", "png", 0, nil)
+	shot, err := r.Window.Screenshot(r.context(), driver.ShotOptions{Format: "png"})
 	if err != nil {
 		return "", err
 	}
+	data := shot.Data
 	if !strings.HasSuffix(name, ".png") {
 		name += ".png"
 	}

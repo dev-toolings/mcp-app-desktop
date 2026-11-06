@@ -38,7 +38,7 @@ func zoomedPage(t *testing.T, factor float64) *rod.Page {
 	if !ok {
 		t.Skip("no Chrome/Chromium installed")
 	}
-	dir, err := os.MkdirTemp("", "mcp-electron-zoom-*")
+	dir, err := os.MkdirTemp("", "mcp-app-desktop-zoom-*")
 	if err != nil {
 		t.Fatal(err)
 	}

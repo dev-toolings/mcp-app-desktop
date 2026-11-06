@@ -12,10 +12,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dev-toolings/mcp-electron/internal/electron"
-	"github.com/dev-toolings/mcp-electron/internal/engine"
-	"github.com/go-rod/rod"
-	"github.com/go-rod/rod/lib/proto"
+	"github.com/dev-toolings/mcp-app-desktop/internal/desktop"
+	"github.com/dev-toolings/mcp-app-desktop/internal/driver"
+	"github.com/dev-toolings/mcp-app-desktop/internal/engine"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -53,50 +52,50 @@ func (s *Server) pageTools() []toolDef {
 			mcpgo.WithString("level", mcpgo.Enum("skeleton", "content", "full"), mcpgo.DefaultString("content")),
 			mcpgo.WithString("selector", mcpgo.Description("CSS selector scoping the extraction to one subtree.")),
 			mcpgo.WithTitleAnnotation("Snapshot window"), mcpgo.WithReadOnlyHintAnnotation(true),
-		), (*Server).handleSnapshot},
-		{action("click", "Click an element. Real mouse events at the element's centre after it is visible, enabled and not covered. Per-row buttons that only appear on hover are revealed by hovering first (see hover_first).",
+		), (*Server).handleSnapshot, ""},
+		{action("click", "Click an element after it is visible, enabled and not covered: real mouse events at its centre (Electron, Tauri on Windows), or the same DOM events dispatched to it (Tauri bridge, which cannot apply CSS :hover: a button that only shows on hover is clicked while still transparent). Per-row buttons that only appear on hover are revealed by hovering first (see hover_first).",
 			mcpgo.WithString("target", mcpgo.Required(), mcpgo.Description(targetDesc)),
 			mcpgo.WithString("button", mcpgo.Enum("left", "right", "middle"), mcpgo.DefaultString("left")),
 			mcpgo.WithBoolean("double", mcpgo.Description("Double-click."), mcpgo.DefaultBool(false)),
 			mcpgo.WithBoolean("hover_first", mcpgo.Description("Buttons shown only on hover (CSS :hover on a row). Omitted: a target hidden by visibility or opacity is revealed by moving the real mouse over it first. true: always hover first, and reveal a display:none target by hovering its nearest rendered ancestor (the row). false: never hover; the target must already be visible.")),
 			mcpgo.WithTitleAnnotation("Click"),
-		), (*Server).handleClick},
+		), (*Server).handleClick, ""},
 		{action("type", "Type text into an element (clears it first unless append: true). submit: true presses Enter afterwards. Without target, types into the focused element.",
 			mcpgo.WithString("text", mcpgo.Required()),
 			mcpgo.WithString("target", mcpgo.Description(targetDesc)),
 			mcpgo.WithBoolean("append", mcpgo.Description("Keep the existing value."), mcpgo.DefaultBool(false)),
 			mcpgo.WithBoolean("submit", mcpgo.Description("Press Enter after typing."), mcpgo.DefaultBool(false)),
 			mcpgo.WithTitleAnnotation("Type text"),
-		), (*Server).handleType},
+		), (*Server).handleType, ""},
 		{action("fill_form", "Fill several fields in one call: a JSON object mapping targets to values, e.g. {\"@3\": \"Ada\", \"getByLabel(\\\"Email\\\")\": \"ada@example.com\"}.",
 			mcpgo.WithString("fields", mcpgo.Required(), mcpgo.Description("JSON object: target → text (or a list of {\"target\", \"value\"}, filled in order).")),
 			mcpgo.WithTitleAnnotation("Fill form"),
-		), (*Server).handleFillForm},
+		), (*Server).handleFillForm, ""},
 		{action("select", "Choose option(s) of a <select> by visible label or value.",
 			mcpgo.WithString("target", mcpgo.Required(), mcpgo.Description(targetDesc)),
 			mcpgo.WithArray("values", mcpgo.Required(), mcpgo.Description("Option labels or values."), mcpgo.WithStringItems()),
 			mcpgo.WithTitleAnnotation("Select option"),
-		), (*Server).handleSelect},
+		), (*Server).handleSelect, ""},
 		{action("press", "Press a key or shortcut: Enter, Escape, Tab, ArrowDown, cmd+k, ctrl+shift+p, shift+Tab… With target, focuses it first.",
 			mcpgo.WithString("key", mcpgo.Required()),
 			mcpgo.WithString("target", mcpgo.Description(targetDesc)),
 			mcpgo.WithTitleAnnotation("Press key"),
-		), (*Server).handlePress},
+		), (*Server).handlePress, ""},
 		{action("hover", "Move the mouse over an element (tooltips, hover menus).",
 			mcpgo.WithString("target", mcpgo.Required(), mcpgo.Description(targetDesc)),
 			mcpgo.WithTitleAnnotation("Hover"),
-		), (*Server).handleHover},
+		), (*Server).handleHover, ""},
 		{action("drag", "Drag one element onto another with real mouse events.",
 			mcpgo.WithString("from", mcpgo.Required(), mcpgo.Description(targetDesc)),
 			mcpgo.WithString("to", mcpgo.Required(), mcpgo.Description(targetDesc)),
 			mcpgo.WithNumber("steps", mcpgo.Description("Intermediate mouse moves (default 10)."), mcpgo.DefaultNumber(10)),
 			mcpgo.WithTitleAnnotation("Drag and drop"),
-		), (*Server).handleDrag},
+		), (*Server).handleDrag, ""},
 		{action("scroll", "Scroll an element into view (target), or the window by dy pixels (negative scrolls up).",
 			mcpgo.WithString("target", mcpgo.Description(targetDesc)),
 			mcpgo.WithNumber("dy", mcpgo.Description("Pixels to scroll the window by when no target is given.")),
 			mcpgo.WithTitleAnnotation("Scroll"),
-		), (*Server).handleScroll},
+		), (*Server).handleScroll, ""},
 		{action("wheel", "Real mouse-wheel events (the page gets `wheel` events, unlike scroll) over an element's centre (target) or at x/y: dy pixels in total (negative scrolls up), split into steps events interval_ms apart. Several calls in a row reproduce fast flicks and direction changes.",
 			mcpgo.WithString("target", mcpgo.Description(targetDesc)),
 			mcpgo.WithNumber("x", mcpgo.Description("Viewport X when no target is given.")),
@@ -105,12 +104,12 @@ func (s *Server) pageTools() []toolDef {
 			mcpgo.WithNumber("steps", mcpgo.Description("Wheel events (default 10, max 500)."), mcpgo.DefaultNumber(10)),
 			mcpgo.WithNumber("interval_ms", mcpgo.Description("Delay between events (default 16, max 1000)."), mcpgo.DefaultNumber(16)),
 			mcpgo.WithTitleAnnotation("Mouse wheel"),
-		), (*Server).handleWheel},
+		), (*Server).handleWheel, ""},
 		{action("upload", "Set the files of a file input (target may be the hidden <input type=file> as a CSS selector).",
 			mcpgo.WithString("target", mcpgo.Required(), mcpgo.Description(targetDesc)),
 			mcpgo.WithArray("files", mcpgo.Required(), mcpgo.Description("Absolute file paths."), mcpgo.WithStringItems()),
 			mcpgo.WithTitleAnnotation("Upload files"),
-		), (*Server).handleUpload},
+		), (*Server).handleUpload, ""},
 		{common("wait_for", "Wait until a condition holds: target visible (or state hidden/attached/enabled), text present in the page, url containing a string, or a load state (load, domcontentloaded, stable, idle). Without a condition, waits timeout_ms.",
 			mcpgo.WithString("target", mcpgo.Description(targetDesc)),
 			mcpgo.WithString("state", mcpgo.Enum("visible", "hidden", "attached", "enabled", "stable"), mcpgo.DefaultString("visible")),
@@ -119,8 +118,8 @@ func (s *Server) pageTools() []toolDef {
 			mcpgo.WithString("load", mcpgo.Enum("load", "domcontentloaded", "stable", "idle")),
 			mcpgo.WithNumber("timeout_ms", mcpgo.Description("Default 10000, max 120000."), mcpgo.DefaultNumber(10000)),
 			mcpgo.WithTitleAnnotation("Wait for"), mcpgo.WithReadOnlyHintAnnotation(true),
-		), (*Server).handleWaitFor},
-		{common("screenshot", "Capture the window (or one element) as an image. webp quality 60 by default; save: true also writes a full-resolution PNG in the session's artifacts directory and returns its path (deleted by stop unless keep_artifacts).",
+		), (*Server).handleWaitFor, ""},
+		{common("screenshot", "Capture the window (or one element) as an image. webp quality 60 by default (JPEG through the Tauri bridge, which has no webp encoder); save: true also writes a full-resolution PNG in the session's artifacts directory and returns its path (deleted by stop unless keep_artifacts). full_page is CDP only.",
 			mcpgo.WithString("target", mcpgo.Description("Element to capture instead of the whole viewport.")),
 			mcpgo.WithBoolean("full_page", mcpgo.Description("Capture beyond the viewport."), mcpgo.DefaultBool(false)),
 			mcpgo.WithString("format", mcpgo.Enum("webp", "jpeg", "png"), mcpgo.DefaultString("webp")),
@@ -128,40 +127,33 @@ func (s *Server) pageTools() []toolDef {
 			mcpgo.WithBoolean("save", mcpgo.Description("Also save a PNG under the session artifacts dir."), mcpgo.DefaultBool(false)),
 			mcpgo.WithString("name", mcpgo.Description("File name for the saved PNG.")),
 			mcpgo.WithTitleAnnotation("Screenshot"), mcpgo.WithReadOnlyHintAnnotation(true),
-		), (*Server).handleScreenshot},
-		{common("eval", "Evaluate JavaScript in the window (renderer). Promises are awaited; the result is serialised. With target, `this` is that element. Use it to read app state, localStorage, or call the preload bridge (window.<api>).",
+		), (*Server).handleScreenshot, ""},
+		{common("eval", "Evaluate JavaScript in the window (renderer, webview). Promises are awaited; the result is serialised. With target, `this` is that element. Use it to read app state, localStorage, or call the preload bridge (Electron: window.<api>; Tauri: window.__TAURI_INTERNALS__, or the invoke tool). A strict CSP without 'unsafe-eval' is fine: the expression is never passed to eval.",
 			mcpgo.WithString("expression", mcpgo.Required(), mcpgo.Description("JS expression; top-level await OK.")),
 			mcpgo.WithString("target", mcpgo.Description("Element bound as `this`.")),
 			mcpgo.WithNumber("timeout_ms", mcpgo.Description("How long to wait for the result, promise included (default 8000, max 120000). On timeout the error says whether the window still answers (slow promise) or its main thread is busy."), mcpgo.DefaultNumber(8000)),
 			mcpgo.WithTitleAnnotation("Evaluate in renderer"),
-		), (*Server).handleEval},
-		{mcpgo.NewTool("eval_main",
-			mcpgo.WithDescription("Evaluate JavaScript in the Electron main process through its Node inspector. require, app, BrowserWindow, webContents, ipcMain, dialog, session, Menu, shell, nativeTheme, screen are in scope. Returns the value of the last expression like the DevTools console: a bare expression, an IIFE ((() => {...; return x})()), an async IIFE, statements ending with an expression, or statements with return / top-level await; promises are awaited within timeout_ms; strings come back as is, other values as JSON; exceptions and rejections are reported as errors. Examples: BrowserWindow.getAllWindows().map(w => ({id: w.id, title: w.getTitle(), bounds: w.getBounds()})); ipcMain.eventNames(); app.getPath('userData'); dialog.showOpenDialog = async () => ({canceled: false, filePaths: ['/tmp/x']})."),
-			mcpgo.WithString("expression", mcpgo.Required()),
-			mcpgo.WithString("session", sessionProp()),
-			mcpgo.WithNumber("timeout_ms", mcpgo.Description("How long to wait for the result, promise included (default 8000, max 120000); synchronous code running longer is terminated."), mcpgo.DefaultNumber(8000)),
-			mcpgo.WithTitleAnnotation("Evaluate in main process"), mcpgo.WithOpenWorldHintAnnotation(false),
-		), (*Server).handleEvalMain},
+		), (*Server).handleEval, ""},
 		{common("navigate", "Load a URL in the window (http(s), file, or the app's custom scheme), or go back/forward in its history.",
 			mcpgo.WithString("url", mcpgo.Description("Absolute URL to load.")),
 			mcpgo.WithString("history", mcpgo.Enum("back", "forward"), mcpgo.Description("Instead of url: step in history.")),
 			mcpgo.WithString("wait", mcpgo.Enum("load", "domcontentloaded", "stable", "idle", "none"), mcpgo.DefaultString("load")),
 			mcpgo.WithTitleAnnotation("Navigate"),
-		), (*Server).handleNavigate},
+		), (*Server).handleNavigate, ""},
 		{common("reload", "Reload the window's page (renderer only; the main process keeps running). Returns the new snapshot.",
 			mcpgo.WithBoolean("ignore_cache", mcpgo.DefaultBool(false)),
 			mcpgo.WithTitleAnnotation("Reload window"),
-		), (*Server).handleReload},
-		{common("dialog", "How JavaScript dialogs (alert, confirm, prompt) of this session are answered from now on: accept (default) or dismiss, with an optional prompt text. Native dialogs (open/save file) are stubbed with eval_main on `dialog`.",
+		), (*Server).handleReload, ""},
+		{common("dialog", "How JavaScript dialogs (alert, confirm, prompt) of this session are answered from now on: accept (default) or dismiss, with an optional prompt text. Native dialogs (open/save file) are stubbed with eval_main on `dialog` in Electron; in Tauri they open for real (tauri-plugin-dialog).",
 			mcpgo.WithString("action", mcpgo.Enum("accept", "dismiss"), mcpgo.DefaultString("accept")),
 			mcpgo.WithString("text", mcpgo.Description("Prompt answer when accepting.")),
 			mcpgo.WithTitleAnnotation("Dialog policy"),
-		), (*Server).handleDialog},
+		), (*Server).handleDialog, ""},
 	}
 }
 
 // windowsText renders the window list in one line per window.
-func windowsText(wins []engine.WindowInfo) string {
+func windowsText(wins []driver.WindowInfo) string {
 	lines := make([]string, 0, len(wins))
 	for _, w := range wins {
 		title := w.Title
@@ -169,8 +161,11 @@ func windowsText(wins []engine.WindowInfo) string {
 			title = "(untitled)"
 		}
 		kind := ""
-		if w.Type != "page" {
+		if w.Type != "" && w.Type != "page" {
 			kind = " " + w.Type
+		}
+		if w.Label != "" {
+			kind += " [" + w.Label + "]"
 		}
 		lines = append(lines, fmt.Sprintf("window %d%s: %q %s", w.Index, kind, title, w.URL))
 	}
@@ -178,26 +173,18 @@ func windowsText(wins []engine.WindowInfo) string {
 }
 
 // snapshotText extracts one window and renders header + tree + recent errors.
-func (s *Server) snapshotText(sess *electron.Session, b *engine.Browser, window int, level, selector string, withLegend bool) (string, error) {
-	page, err := b.Page(window)
-	if err != nil {
-		return "", err
-	}
+func (s *Server) snapshotText(ctx context.Context, sess *desktop.Session, w driver.Window, level, selector string, withLegend bool) (string, error) {
 	lvl := engine.ExtractLevel(level)
 	if err := engine.ValidateExtractLevel(lvl); err != nil {
 		return "", err
 	}
-	result, err := engine.Extract(page, lvl, selector)
+	result, err := w.Snapshot(ctx, lvl, selector)
 	if err != nil {
 		return "", err
 	}
-	_ = b.SaveSnapshot(page, result)
-	info, _ := page.Info()
+	url, title, _ := w.Info(ctx)
+	window := w.Index()
 	var sb strings.Builder
-	url, title := "", ""
-	if info != nil {
-		url, title = info.URL, info.Title
-	}
 	fmt.Fprintf(&sb, "[window %d] %q %s | %d interactive", window, title, url, result.Stats.InteractiveCount)
 	if len(result.Warnings) > 0 {
 		sb.WriteString(" | warning: " + strings.Join(result.Warnings, "; "))
@@ -224,7 +211,7 @@ func (s *Server) snapshotText(sess *electron.Session, b *engine.Browser, window 
 // snapshot can list the errors logged in between.
 var snapshotMarks sync.Map // session id → time.Time
 
-func (s *Server) markSnapshot(sess *electron.Session) time.Time {
+func (s *Server) markSnapshot(sess *desktop.Session) time.Time {
 	now := time.Now()
 	prev, loaded := snapshotMarks.Swap(sess.ID, now)
 	if !loaded {
@@ -233,8 +220,8 @@ func (s *Server) markSnapshot(sess *electron.Session) time.Time {
 	return prev.(time.Time)
 }
 
-func recentErrors(sess *electron.Session, window int, since time.Time) []electron.LogEntry {
-	var out []electron.LogEntry
+func recentErrors(sess *desktop.Session, window int, since time.Time) []desktop.LogEntry {
+	var out []desktop.LogEntry
 	for _, e := range sess.Logs() {
 		if !e.IsError() || e.Time.Before(since) {
 			continue
@@ -253,14 +240,15 @@ func recentErrors(sess *electron.Session, window int, since time.Time) []electro
 func (s *Server) handleSnapshot(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 	level := mcpgo.ParseString(req, "level", "content")
 	selector := mcpgo.ParseString(req, "selector", "")
-	return s.withPage(ctx, req, func(sess *electron.Session, b *engine.Browser, page *rod.Page) (*mcpgo.CallToolResult, error) {
-		window := b.IndexOf(page)
-		out, err := s.snapshotText(sess, b, window, level, selector, false)
+	return s.observePage(ctx, req, func(sess *desktop.Session, w driver.Window) (*mcpgo.CallToolResult, error) {
+		out, err := s.snapshotText(ctx, sess, w, level, selector, false)
 		if err != nil {
 			return errResult(fmt.Errorf("snapshot: %w", err))
 		}
-		if wins, err := b.Windows(); err == nil && len(wins) > 1 {
-			out += "\n" + windowsText(wins)
+		if app, err := sess.App(ctx); err == nil {
+			if wins, err := app.Windows(ctx); err == nil && len(wins) > 1 {
+				out += "\n" + windowsText(wins)
+			}
 		}
 		return text(out)
 	})
@@ -279,23 +267,17 @@ func (s *Server) handleClick(ctx context.Context, req mcpgo.CallToolRequest) (*m
 		return errResult(err)
 	}
 	timeout := lookupTimeout(req)
-	return s.withPage(ctx, req, func(sess *electron.Session, b *engine.Browser, page *rod.Page) (*mcpgo.CallToolResult, error) {
-		verb := "clicked"
+	return s.withPage(ctx, req, func(sess *desktop.Session, w driver.Window) (*mcpgo.CallToolResult, error) {
+		verb, count := "clicked", 1
 		if double {
-			verb = "double-clicked"
+			verb, count = "double-clicked", 2
 		}
 		var note string
 		summary := func() string { return fmt.Sprintf("%s %s%s", verb, target, note) }
-		return mutateWith(b, page, mode, summary, func() error {
-			el, n, err := resolveClickable(page, b, target, timeout, hover)
-			if err != nil {
-				return err
-			}
-			note = n
-			if double {
-				return engine.DblClickElementWithButton(page, el, button)
-			}
-			return engine.ClickElementWithButton(page, el, button)
+		return mutateWith(ctx, w, mode, summary, func() error {
+			var err error
+			note, err = w.Click(ctx, target, driver.ClickOptions{Button: button, Count: count, Hover: hover, Timeout: timeout})
+			return err
 		})
 	})
 }
@@ -310,7 +292,7 @@ func (s *Server) handleType(ctx context.Context, req mcpgo.CallToolRequest) (*mc
 		return errResult(err)
 	}
 	timeout := lookupTimeout(req)
-	return s.withPage(ctx, req, func(sess *electron.Session, b *engine.Browser, page *rod.Page) (*mcpgo.CallToolResult, error) {
+	return s.withPage(ctx, req, func(sess *desktop.Session, w driver.Window) (*mcpgo.CallToolResult, error) {
 		summary := fmt.Sprintf("typed %d chars", len([]rune(textArg)))
 		if target != "" {
 			summary += " into " + target
@@ -318,35 +300,8 @@ func (s *Server) handleType(ctx context.Context, req mcpgo.CallToolRequest) (*mc
 		if submit {
 			summary += " + Enter"
 		}
-		return mutate(b, page, mode, summary, func() error {
-			var el *rod.Element
-			if target != "" {
-				var err error
-				if el, err = resolve(page, b, target, timeout); err != nil {
-					return err
-				}
-			}
-			if el != nil && appendText {
-				if err := engine.FocusElement(el); err != nil {
-					return err
-				}
-				if err := page.InsertText(textArg); err != nil {
-					return err
-				}
-			} else if el != nil {
-				if err := engine.TypeElement(page, el, textArg); err != nil {
-					return err
-				}
-			} else if err := engine.TypeFocused(page, textArg); err != nil {
-				return err
-			}
-			if submit {
-				if el != nil {
-					return engine.SubmitOnElement(page, el)
-				}
-				return pressKeys(page, "Enter")
-			}
-			return nil
+		return mutate(ctx, w, mode, summary, func() error {
+			return w.Type(ctx, target, textArg, driver.TypeOptions{Append: appendText, Submit: submit, Timeout: timeout})
 		})
 	})
 }
@@ -361,15 +316,14 @@ func (s *Server) handleFillForm(ctx context.Context, req mcpgo.CallToolRequest) 
 		return errResult(err)
 	}
 	timeout := lookupTimeout(req)
-	return s.withPage(ctx, req, func(sess *electron.Session, b *engine.Browser, page *rod.Page) (*mcpgo.CallToolResult, error) {
-		return mutate(b, page, mode, fmt.Sprintf("filled %d field(s)", len(fields)), func() error {
+	return s.withPage(ctx, req, func(sess *desktop.Session, w driver.Window) (*mcpgo.CallToolResult, error) {
+		return mutate(ctx, w, mode, fmt.Sprintf("filled %d field(s)", len(fields)), func() error {
 			for _, f := range fields {
 				target := normalizeTarget(f.target)
-				el, err := resolve(page, b, target, timeout)
-				if err != nil {
-					return err
+				if target == "" {
+					return fmt.Errorf("target is required (@ref from snapshot, a CSS selector, or getByRole/getByText/getByLabel)")
 				}
-				if err := engine.TypeElement(page, el, f.text); err != nil {
+				if err := w.Type(ctx, target, f.text, driver.TypeOptions{Timeout: timeout}); err != nil {
 					return fmt.Errorf("%s: %w", target, err)
 				}
 			}
@@ -450,23 +404,16 @@ func (s *Server) handleSelect(ctx context.Context, req mcpgo.CallToolRequest) (*
 		return errResult(err)
 	}
 	timeout := lookupTimeout(req)
-	return s.withPage(ctx, req, func(sess *electron.Session, b *engine.Browser, page *rod.Page) (*mcpgo.CallToolResult, error) {
-		return mutate(b, page, mode, fmt.Sprintf("selected %v in %s", values, target), func() error {
-			el, err := resolve(page, b, target, timeout)
-			if err != nil {
-				return err
-			}
-			if err := engine.SelectOptions(el, values); err != nil {
-				return fmt.Errorf("select: %w", err)
-			}
-			return nil
+	return s.withPage(ctx, req, func(sess *desktop.Session, w driver.Window) (*mcpgo.CallToolResult, error) {
+		return mutate(ctx, w, mode, fmt.Sprintf("selected %v in %s", values, target), func() error {
+			return w.Select(ctx, target, values, timeout)
 		})
 	})
 }
 
 func (s *Server) handlePress(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 	key := mcpgo.ParseString(req, "key", "")
-	if _, _, err := parseKeyCombo(key); err != nil {
+	if _, err := driver.ParseCombo(key); err != nil {
 		return errResult(err)
 	}
 	target := normalizeTarget(mcpgo.ParseString(req, "target", ""))
@@ -475,22 +422,13 @@ func (s *Server) handlePress(ctx context.Context, req mcpgo.CallToolRequest) (*m
 		return errResult(err)
 	}
 	timeout := lookupTimeout(req)
-	return s.withPage(ctx, req, func(sess *electron.Session, b *engine.Browser, page *rod.Page) (*mcpgo.CallToolResult, error) {
+	return s.withPage(ctx, req, func(sess *desktop.Session, w driver.Window) (*mcpgo.CallToolResult, error) {
 		summary := "pressed " + key
 		if target != "" {
 			summary += " on " + target
 		}
-		return mutate(b, page, mode, summary, func() error {
-			if target != "" {
-				el, err := resolve(page, b, target, timeout)
-				if err != nil {
-					return err
-				}
-				if err := engine.FocusElement(el); err != nil {
-					return fmt.Errorf("focus: %w", err)
-				}
-			}
-			return pressKeys(page, key)
+		return mutate(ctx, w, mode, summary, func() error {
+			return w.Press(ctx, target, key, timeout)
 		})
 	})
 }
@@ -502,13 +440,9 @@ func (s *Server) handleHover(ctx context.Context, req mcpgo.CallToolRequest) (*m
 		return errResult(err)
 	}
 	timeout := lookupTimeout(req)
-	return s.withPage(ctx, req, func(sess *electron.Session, b *engine.Browser, page *rod.Page) (*mcpgo.CallToolResult, error) {
-		return mutate(b, page, mode, "hovered "+target, func() error {
-			el, err := resolve(page, b, target, timeout)
-			if err != nil {
-				return err
-			}
-			return engine.HoverElement(page, el)
+	return s.withPage(ctx, req, func(sess *desktop.Session, w driver.Window) (*mcpgo.CallToolResult, error) {
+		return mutate(ctx, w, mode, "hovered "+target, func() error {
+			return w.Hover(ctx, target, timeout)
 		})
 	})
 }
@@ -522,29 +456,9 @@ func (s *Server) handleDrag(ctx context.Context, req mcpgo.CallToolRequest) (*mc
 		return errResult(err)
 	}
 	timeout := lookupTimeout(req)
-	return s.withPage(ctx, req, func(sess *electron.Session, b *engine.Browser, page *rod.Page) (*mcpgo.CallToolResult, error) {
-		return mutate(b, page, mode, fmt.Sprintf("dragged %s onto %s", from, to), func() error {
-			src, err := resolve(page, b, from, timeout)
-			if err != nil {
-				return fmt.Errorf("from: %w", err)
-			}
-			dst, err := resolve(page, b, to, timeout)
-			if err != nil {
-				return fmt.Errorf("to: %w", err)
-			}
-			sb, err := src.Shape()
-			if err != nil {
-				return err
-			}
-			db, err := dst.Shape()
-			if err != nil {
-				return err
-			}
-			sr, dr := sb.Box(), db.Box()
-			if sr == nil || dr == nil {
-				return fmt.Errorf("source or target has no visible box")
-			}
-			return engine.DragDropCoords(page, sr.X+sr.Width/2, sr.Y+sr.Height/2, dr.X+dr.Width/2, dr.Y+dr.Height/2, steps)
+	return s.withPage(ctx, req, func(sess *desktop.Session, w driver.Window) (*mcpgo.CallToolResult, error) {
+		return mutate(ctx, w, mode, fmt.Sprintf("dragged %s onto %s", from, to), func() error {
+			return w.Drag(ctx, from, to, steps, timeout)
 		})
 	})
 }
@@ -560,23 +474,16 @@ func (s *Server) handleScroll(ctx context.Context, req mcpgo.CallToolRequest) (*
 		return errResult(err)
 	}
 	timeout := lookupTimeout(req)
-	return s.withPage(ctx, req, func(sess *electron.Session, b *engine.Browser, page *rod.Page) (*mcpgo.CallToolResult, error) {
+	return s.withPage(ctx, req, func(sess *desktop.Session, w driver.Window) (*mcpgo.CallToolResult, error) {
 		summary := fmt.Sprintf("scrolled by %d", dy)
 		if target != "" {
 			summary = "scrolled " + target + " into view"
 		}
-		return mutate(b, page, mode, summary, func() error {
+		return mutate(ctx, w, mode, summary, func() error {
 			if target != "" {
-				el, err := engine.WaitForTarget(page, target, b.Snapshot(page), engine.StateAttached, timeout)
-				if err != nil {
-					return err
-				}
-				if el == nil {
-					return fmt.Errorf("%s: not found", target)
-				}
-				return engine.ScrollIntoViewNow(el)
+				return w.ScrollIntoView(ctx, target, timeout)
 			}
-			_, err := engine.ScrollBy(page, dy)
+			_, err := w.ScrollBy(ctx, 0, dy)
 			return err
 		})
 	})
@@ -605,25 +512,9 @@ func (s *Server) handleWheel(ctx context.Context, req mcpgo.CallToolRequest) (*m
 		return errResult(err)
 	}
 	timeout := lookupTimeout(req)
-	return s.withPage(ctx, req, func(sess *electron.Session, b *engine.Browser, page *rod.Page) (*mcpgo.CallToolResult, error) {
-		return mutate(b, page, mode, fmt.Sprintf("wheeled %g px in %d events", dy, steps), func() error {
-			px, py := x, y
-			if target != "" {
-				el, err := resolve(page, b, target, timeout)
-				if err != nil {
-					return err
-				}
-				shape, err := el.Shape()
-				if err != nil {
-					return err
-				}
-				box := shape.Box()
-				if box == nil {
-					return fmt.Errorf("%s has no visible box", target)
-				}
-				px, py = box.X+box.Width/2, box.Y+box.Height/2
-			}
-			return engine.WheelAt(page, px, py, dy, steps, time.Duration(interval)*time.Millisecond)
+	return s.withPage(ctx, req, func(sess *desktop.Session, w driver.Window) (*mcpgo.CallToolResult, error) {
+		return mutate(ctx, w, mode, fmt.Sprintf("wheeled %g px in %d events", dy, steps), func() error {
+			return w.Wheel(ctx, target, x, y, dy, steps, time.Duration(interval)*time.Millisecond, timeout)
 		})
 	})
 }
@@ -650,16 +541,9 @@ func (s *Server) handleUpload(ctx context.Context, req mcpgo.CallToolRequest) (*
 		return errResult(err)
 	}
 	timeout := lookupTimeout(req)
-	return s.withPage(ctx, req, func(sess *electron.Session, b *engine.Browser, page *rod.Page) (*mcpgo.CallToolResult, error) {
-		return mutate(b, page, mode, fmt.Sprintf("uploaded %d file(s) to %s", len(files), target), func() error {
-			el, err := engine.WaitForTarget(page, target, b.Snapshot(page), engine.StateAttached, timeout)
-			if err != nil {
-				return err
-			}
-			if el == nil {
-				return fmt.Errorf("%s: not found", target)
-			}
-			return el.SetFiles(files)
+	return s.withPage(ctx, req, func(sess *desktop.Session, w driver.Window) (*mcpgo.CallToolResult, error) {
+		return mutate(ctx, w, mode, fmt.Sprintf("uploaded %d file(s) to %s", len(files), target), func() error {
+			return w.Upload(ctx, target, files, timeout)
 		})
 	})
 }
@@ -679,9 +563,9 @@ func (s *Server) handleWaitFor(ctx context.Context, req mcpgo.CallToolRequest) (
 		}
 		return textf("waited %s (no condition)", timeout)
 	}
-	return s.withPage(ctx, req, func(sess *electron.Session, b *engine.Browser, page *rod.Page) (*mcpgo.CallToolResult, error) {
+	return s.withPage(ctx, req, func(sess *desktop.Session, w driver.Window) (*mcpgo.CallToolResult, error) {
 		start := time.Now()
-		if _, err := engine.WaitForAgent(page, b, b.Snapshot(page), engine.WaitSpec{Selector: target, Text: textArg, URL: url, Load: load, State: state, Timeout: timeout}, timeout); err != nil {
+		if err := w.Wait(ctx, engine.WaitSpec{Selector: target, Text: textArg, URL: url, Load: load, State: state, Timeout: timeout}); err != nil {
 			return errResult(err)
 		}
 		label := firstNonEmpty(target, textArg, url, load)
@@ -711,26 +595,29 @@ func (s *Server) handleScreenshot(ctx context.Context, req mcpgo.CallToolRequest
 	}
 	save := mcpgo.ParseBoolean(req, "save", false)
 	name := mcpgo.ParseString(req, "name", "")
-	return s.withPage(ctx, req, func(sess *electron.Session, b *engine.Browser, page *rod.Page) (*mcpgo.CallToolResult, error) {
-		data, err := engine.TakeScreenshotFormat(page, fullPage, target, format, quality, b.Snapshot(page))
+	return s.observePage(ctx, req, func(sess *desktop.Session, w driver.Window) (*mcpgo.CallToolResult, error) {
+		shot, err := w.Screenshot(ctx, driver.ShotOptions{Target: target, FullPage: fullPage, Format: format, Quality: quality})
 		if err != nil {
 			return errResult(fmt.Errorf("screenshot: %w", err))
 		}
-		summary := fmt.Sprintf("window %d %s (%d bytes)", b.IndexOf(page), format, len(data))
+		summary := fmt.Sprintf("window %d %s (%d bytes)", w.Index(), shot.Format, len(shot.Data))
+		if shot.Note != "" {
+			summary += " (" + shot.Note + ")"
+		}
 		if save {
-			png := data
-			if format != "png" {
-				if png, err = engine.TakeScreenshotFormat(page, fullPage, target, "png", 0, b.Snapshot(page)); err != nil {
+			png := shot
+			if shot.Format != "png" {
+				if png, err = w.Screenshot(ctx, driver.ShotOptions{Target: target, FullPage: fullPage, Format: "png"}); err != nil {
 					return errResult(fmt.Errorf("screenshot png: %w", err))
 				}
 			}
-			path, err := saveArtifact(sess.Dir, name, "screenshot-"+time.Now().Format("150405.000"), ".png", png)
+			path, err := saveArtifact(sess.Dir, name, "screenshot-"+time.Now().Format("150405.000"), ".png", png.Data)
 			if err != nil {
 				return errResult(err)
 			}
 			summary += " saved to " + path
 		}
-		return mcpgo.NewToolResultImage(summary, base64.StdEncoding.EncodeToString(data), "image/"+format), nil
+		return mcpgo.NewToolResultImage(summary, base64.StdEncoding.EncodeToString(shot.Data), "image/"+shot.Format), nil
 	})
 }
 
@@ -760,42 +647,13 @@ func (s *Server) handleEval(ctx context.Context, req mcpgo.CallToolRequest) (*mc
 	}
 	target := normalizeTarget(mcpgo.ParseString(req, "target", ""))
 	timeout := evalTimeout(req)
-	return s.withPage(ctx, req, func(sess *electron.Session, b *engine.Browser, page *rod.Page) (*mcpgo.CallToolResult, error) {
-		value, err := engine.EvalJSTimeout(page, expr, target, b.Snapshot(page), timeout)
+	return s.observePage(ctx, req, func(sess *desktop.Session, w driver.Window) (*mcpgo.CallToolResult, error) {
+		value, err := w.Eval(ctx, expr, target, timeout)
 		if err != nil {
 			return errResult(fmt.Errorf("eval: %w", err))
 		}
-		_ = b.InvalidateCachedExtract(page)
 		return text(value)
 	})
-}
-
-func (s *Server) handleEvalMain(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-	expr := mcpgo.ParseString(req, "expression", "")
-	if strings.TrimSpace(expr) == "" {
-		return errorf("expression is required")
-	}
-	timeout := evalTimeout(req)
-	sess, err := s.session(req)
-	if err != nil {
-		return errResult(err)
-	}
-	if _, err := sess.Browser(ctx); err != nil {
-		return errResult(err)
-	}
-	main := sess.Main()
-	if main == nil {
-		st := sess.Status()
-		if st.Inspector == "" {
-			return errorf("no main process inspector for this session: launch with inspect: true (default) or attach with inspector_endpoint")
-		}
-		return errorf("the main process inspector at %s is not connected yet (a packaged app may refuse --inspect). Check status and logs", st.Inspector)
-	}
-	value, err := main.Eval(ctx, expr, timeout)
-	if err != nil {
-		return errResult(err)
-	}
-	return text(value)
 }
 
 func (s *Server) handleNavigate(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -805,24 +663,22 @@ func (s *Server) handleNavigate(ctx context.Context, req mcpgo.CallToolRequest) 
 	if url == "" && history == "" {
 		return errorf("give url or history")
 	}
-	return s.withPage(ctx, req, func(sess *electron.Session, b *engine.Browser, page *rod.Page) (*mcpgo.CallToolResult, error) {
+	return s.withPage(ctx, req, func(sess *desktop.Session, w driver.Window) (*mcpgo.CallToolResult, error) {
 		if history != "" {
 			delta := 1
 			if history == "back" {
 				delta = -1
 			}
-			if err := engine.HistoryStep(page, delta, wait); err != nil {
+			if err := w.History(ctx, delta, wait); err != nil {
 				return errResult(fmt.Errorf("%s: %w", history, err))
 			}
-		} else if _, err := engine.Navigate(page, url, wait); err != nil {
+		} else if err := w.Navigate(ctx, url, wait); err != nil {
 			return errResult(fmt.Errorf("navigate: %w", err))
 		}
-		_ = b.InvalidateCachedExtract(page)
-		out, err := s.snapshotText(sess, b, b.IndexOf(page), "content", "", false)
+		out, err := s.snapshotText(ctx, sess, w, "content", "", false)
 		if err != nil {
-			info, _ := page.Info()
-			if info != nil {
-				return textf("navigated to %s (snapshot failed: %v)", info.URL, err)
+			if u, _, ierr := w.Info(ctx); ierr == nil {
+				return textf("navigated to %s (snapshot failed: %v)", u, err)
 			}
 			return errResult(err)
 		}
@@ -832,15 +688,11 @@ func (s *Server) handleNavigate(ctx context.Context, req mcpgo.CallToolRequest) 
 
 func (s *Server) handleReload(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
 	ignoreCache := mcpgo.ParseBoolean(req, "ignore_cache", false)
-	return s.withPage(ctx, req, func(sess *electron.Session, b *engine.Browser, page *rod.Page) (*mcpgo.CallToolResult, error) {
-		wait := page.Timeout(30 * time.Second).WaitEvent(&proto.PageLoadEventFired{})
-		if err := (proto.PageReload{IgnoreCache: ignoreCache}).Call(page); err != nil {
-			return errResult(fmt.Errorf("reload: %w", err))
+	return s.withPage(ctx, req, func(sess *desktop.Session, w driver.Window) (*mcpgo.CallToolResult, error) {
+		if err := w.Reload(ctx, ignoreCache); err != nil {
+			return errResult(err)
 		}
-		wait()
-		_ = engine.WaitForPage(page, "stable")
-		_ = b.InvalidateCachedExtract(page)
-		out, err := s.snapshotText(sess, b, b.IndexOf(page), "content", "", false)
+		out, err := s.snapshotText(ctx, sess, w, "content", "", false)
 		if err != nil {
 			return textf("reloaded (snapshot failed: %v)", err)
 		}

@@ -1,5 +1,5 @@
 // Package skills embeds the agent skill shipped with the Claude Code plugin
-// (plugin/skills/mcp-electron) so `mcp-electron install` writes the same
+// (plugin/skills/mcp-app-desktop) so `mcp-app-desktop install` writes the same
 // files for Claude Code and Codex users who do not use the plugin.
 package skills
 
@@ -9,9 +9,9 @@ import (
 	"strings"
 )
 
-const root = "mcp-electron"
+const root = "mcp-app-desktop"
 
-//go:embed mcp-electron/SKILL.md mcp-electron/references/*.md
+//go:embed mcp-app-desktop/SKILL.md mcp-app-desktop/references/*.md
 var tree embed.FS
 
 // Files returns every file of the skill keyed by its path relative to the

@@ -24,7 +24,7 @@ import (
 // of the server's goroutines when it is still running after StuckAfter.
 
 const (
-	traceEnv = "MCP_ELECTRON_TRACE"
+	traceEnv = "MCP_APP_DESKTOP_TRACE"
 	// Kevin: nothing may grow for nothing. One rotation of 2 MiB (4 MiB at most), files older than a day
 	// are removed when the server starts, and the trace tool clears them once a problem is fixed.
 	traceMaxBytes   = 2 << 20
@@ -45,7 +45,7 @@ type Tracer struct {
 	seq        atomic.Int64
 }
 
-// tracePath is MCP_ELECTRON_TRACE (a file path, or "off"), else <user cache>/mcp-electron/trace.jsonl.
+// tracePath is MCP_APP_DESKTOP_TRACE (a file path, or "off"), else <user cache>/mcp-app-desktop/trace.jsonl.
 func tracePath() string {
 	if v := strings.TrimSpace(os.Getenv(traceEnv)); v != "" {
 		if strings.EqualFold(v, "off") || v == "0" {
@@ -57,7 +57,7 @@ func tracePath() string {
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(dir, "mcp-electron", "trace.jsonl")
+	return filepath.Join(dir, "mcp-app-desktop", "trace.jsonl")
 }
 
 // NewTracer opens the trace file; on any error the server runs without trace (said on stderr).
@@ -208,7 +208,7 @@ func goroutines() string {
 	blocks := bytes.Split(buf, []byte("\n\n"))
 	var own, rest []string
 	for _, b := range blocks {
-		if bytes.Contains(b, []byte("mcp-electron/internal/")) {
+		if bytes.Contains(b, []byte("mcp-app-desktop/internal/")) {
 			own = append(own, string(b))
 		} else {
 			rest = append(rest, string(b))

@@ -13,7 +13,7 @@ import (
 func (s *Server) traceTools() []toolDef {
 	return []toolDef{
 		{mcpgo.NewTool("trace",
-			mcpgo.WithDescription("mcp-electron's own trace, to diagnose and fix the server: one JSON line per call start and end (arguments, duration, error, result head), host cancellations (an interrupted call), and a dump of the server's goroutines when a call ran past 20 s (\"stuck\": where it blocks). Oldest first. Also written to the file named in the answer."),
+			mcpgo.WithDescription("mcp-app-desktop's own trace, to diagnose and fix the server: one JSON line per call start and end (arguments, duration, error, result head), host cancellations (an interrupted call), and a dump of the server's goroutines when a call ran past 20 s (\"stuck\": where it blocks). Oldest first. Also written to the file named in the answer."),
 			mcpgo.WithNumber("last", mcpgo.Description("Lines to return (default 40)."), mcpgo.DefaultNumber(40)),
 			mcpgo.WithString("tool", mcpgo.Description("Only this tool's calls.")),
 			mcpgo.WithBoolean("problems", mcpgo.Description("Only failed, cancelled and stuck calls (with their start line)."), mcpgo.DefaultBool(false)),
@@ -21,7 +21,7 @@ func (s *Server) traceTools() []toolDef {
 			mcpgo.WithBoolean("with_stacks", mcpgo.Description("Include the goroutine dumps of stuck calls (long)."), mcpgo.DefaultBool(false)),
 			mcpgo.WithBoolean("clear", mcpgo.Description("Delete the trace once the problem is understood or fixed (it is also bounded to 4 MiB and removed after a day)."), mcpgo.DefaultBool(false)),
 			mcpgo.WithTitleAnnotation("Read the server trace"), mcpgo.WithOpenWorldHintAnnotation(false),
-		), (*Server).handleTrace},
+		), (*Server).handleTrace, ""},
 	}
 }
 

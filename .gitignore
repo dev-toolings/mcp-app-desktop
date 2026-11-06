@@ -1,6 +1,9 @@
 /dist/
 /bin/
-/mcp-electron
-/mcp-electron.exe
+/mcp-app-desktop
+/mcp-app-desktop.exe
 /plugin/bin/
 /.playwright-mcp/
+/mcp-electron
+/examples/tauri-fixture/src-tauri/target/
+/examples/tauri-fixture/src-tauri/gen/

@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Second</title>
+  </head>
+  <body>
+    <h1>Second window</h1>
+    <button id="ping" type="button">Ping</button>
+    <p id="pong"></p>
+    <script>
+      document.getElementById('ping').addEventListener('click', () => {
+        document.getElementById('pong').textContent = 'pong';
+        console.log('ping');
+      });
+    </script>
+  </body>
+</html>

@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dev-toolings/mcp-electron/internal/electron"
-	"github.com/dev-toolings/mcp-electron/internal/engine"
+	"github.com/dev-toolings/mcp-app-desktop/internal/desktop"
+	"github.com/dev-toolings/mcp-app-desktop/internal/driver"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -18,51 +18,53 @@ func sessionProp() mcpgo.PropertyOption {
 func (s *Server) sessionTools() []toolDef {
 	return []toolDef{
 		{mcpgo.NewTool("launch",
-			mcpgo.WithDescription("Start an Electron application and attach to it. target: a project directory (package.json + node_modules/electron, run as `electron .`), a built .app, or an Electron executable: it gets --remote-debugging-port, --inspect (main process) and a private --user-data-dir. command: a development command instead (e.g. [\"bun\",\"run\",\"dev\"]) whose script must pass $MCP_ELECTRON_CDP_PORT (and $MCP_ELECTRON_INSPECT_PORT) to electron as --remote-debugging-port / --inspect; the session then re-attaches after every restart the dev loop does. Returns the session and the first window's snapshot."),
-			mcpgo.WithString("target", mcpgo.Description("Electron project dir, .app bundle or executable path.")),
-			mcpgo.WithArray("command", mcpgo.Description("Development command argv (no shell). ${MCP_ELECTRON_CDP_PORT} / ${MCP_ELECTRON_INSPECT_PORT} are expanded in argv and env."), mcpgo.WithStringItems()),
+			mcpgo.WithDescription("Start an Electron or Tauri application and attach to it; the framework is recognised from the target. Electron target (a project dir with node_modules/electron run as `electron .`, a built .app, an executable): it gets --remote-debugging-port, --inspect (main process) and a private --user-data-dir. Tauri target: a project dir (src-tauri/tauri.conf.json) runs through its dev loop (tauri dev: the project's \"tauri\" script, its CLI, or cargo tauri); a built .app or executable runs directly. A Tauri app must register tauri-plugin-mcp-app-desktop (debug builds) on macOS and Linux; on Windows WebView2's DevTools port is used. command: a development command instead (e.g. [\"bun\",\"run\",\"dev\"]): it receives $MCP_APP_DESKTOP_CDP_PORT and $MCP_APP_DESKTOP_INSPECT_PORT (an Electron script passes them to electron as --remote-debugging-port / --inspect) and $MCP_APP_DESKTOP_BRIDGE_PORT / $MCP_APP_DESKTOP_BRIDGE_TOKEN (read by the Tauri plugin); whichever answers first tells the framework, and the session re-attaches after every restart the dev loop does. Returns the session and the first window's snapshot."),
+			mcpgo.WithString("target", mcpgo.Description("Electron or Tauri project dir, .app bundle or executable path.")),
+			mcpgo.WithArray("command", mcpgo.Description("Development command argv (no shell). ${MCP_APP_DESKTOP_CDP_PORT}, ${MCP_APP_DESKTOP_INSPECT_PORT} and ${MCP_APP_DESKTOP_BRIDGE_PORT} are expanded in argv and env (the former MCP_ELECTRON_* names too)."), mcpgo.WithStringItems()),
+			mcpgo.WithString("framework", mcpgo.Enum("auto", "electron", "tauri"), mcpgo.Description("For command: the framework it starts (auto: whichever endpoint answers; a cwd with src-tauri means Tauri and a longer startup timeout for its first build)."), mcpgo.DefaultString("auto")),
 			mcpgo.WithArray("args", mcpgo.Description("Extra application arguments (target launches)."), mcpgo.WithStringItems()),
 			mcpgo.WithObject("env", mcpgo.Description("Extra environment variables, e.g. an app-specific test data dir."), mcpgo.AdditionalProperties(map[string]any{"type": "string"})),
 			mcpgo.WithString("cwd", mcpgo.Description("Working directory (default: the project or target dir).")),
-			mcpgo.WithBoolean("isolate", mcpgo.Description("Private user-data-dir for a target launch (default true). The app's own data dir env vars still need passing through env."), mcpgo.DefaultBool(true)),
-			mcpgo.WithBoolean("inspect", mcpgo.Description("Open the main process Node inspector for eval_main (default true)."), mcpgo.DefaultBool(true)),
-			mcpgo.WithNumber("startup_timeout_ms", mcpgo.Description("Wait for the debugging port (default 60000 for a target, 180000 for a command).")),
+			mcpgo.WithBoolean("isolate", mcpgo.Description("Electron: private user-data-dir for a target launch (default true). A Tauri app keeps its own data directories. The app's own data dir env vars still need passing through env."), mcpgo.DefaultBool(true)),
+			mcpgo.WithBoolean("inspect", mcpgo.Description("Electron: open the main process Node inspector for eval_main (default true)."), mcpgo.DefaultBool(true)),
+			mcpgo.WithNumber("startup_timeout_ms", mcpgo.Description("Wait for the app to answer (default 60000 for a target, 180000 for a command, 900000 for a Tauri dev command, whose first build compiles the Rust side).")),
 			mcpgo.WithString("name", mcpgo.Description("Display name for the session.")),
 			mcpgo.WithTitleAnnotation("Launch application"), mcpgo.WithDestructiveHintAnnotation(true), mcpgo.WithOpenWorldHintAnnotation(false),
-		), (*Server).handleLaunch},
+		), (*Server).handleLaunch, ""},
 		{mcpgo.NewTool("attach",
-			mcpgo.WithDescription("Attach to an Electron app already running with --remote-debugging-port (endpoint http://127.0.0.1:PORT or just the port). Optional inspector_endpoint: its main process --inspect endpoint, for eval_main. stop detaches without closing the app."),
-			mcpgo.WithString("endpoint", mcpgo.Required(), mcpgo.Description("Remote debugging endpoint, e.g. http://127.0.0.1:9222 or 9222.")),
-			mcpgo.WithString("inspector_endpoint", mcpgo.Description("Main process Node inspector endpoint, e.g. http://127.0.0.1:9229.")),
+			mcpgo.WithDescription("Attach to an app already running: an Electron app started with --remote-debugging-port (endpoint http://127.0.0.1:PORT or just the port; optional inspector_endpoint: its main process --inspect endpoint, for eval_main), or a Tauri app with tauri-plugin-mcp-app-desktop started with MCP_APP_DESKTOP_BRIDGE_PORT (endpoint: that port; token: its MCP_APP_DESKTOP_BRIDGE_TOKEN when it has one). The kind is recognised from what answers. stop detaches without closing the app."),
+			mcpgo.WithString("endpoint", mcpgo.Required(), mcpgo.Description("Remote debugging endpoint (http://127.0.0.1:9222 or 9222) or Tauri bridge port (127.0.0.1:9333 or 9333).")),
+			mcpgo.WithString("inspector_endpoint", mcpgo.Description("Electron: main process Node inspector endpoint, e.g. http://127.0.0.1:9229.")),
+			mcpgo.WithString("token", mcpgo.Description("Tauri: the bridge token the app was started with (MCP_APP_DESKTOP_BRIDGE_TOKEN), if any.")),
 			mcpgo.WithString("name", mcpgo.Description("Display name for the session.")),
 			mcpgo.WithTitleAnnotation("Attach to a running application"), mcpgo.WithOpenWorldHintAnnotation(false),
-		), (*Server).handleAttach},
+		), (*Server).handleAttach, ""},
 		{mcpgo.NewTool("status",
-			mcpgo.WithDescription("Sessions, their state (running, restarting, exited), restarts seen, ports, and the windows of the running ones. Call it when a tool answers that the app is restarting or unreachable."),
+			mcpgo.WithDescription("Sessions, their framework (electron, tauri) and backend (cdp, bridge), state (running, restarting, exited), restarts seen, endpoints, resources, and the windows of the running ones. Call it when a tool answers that the app is restarting or unreachable."),
 			mcpgo.WithTitleAnnotation("Session status"), mcpgo.WithReadOnlyHintAnnotation(true), mcpgo.WithOpenWorldHintAnnotation(false),
-		), (*Server).handleStatus},
+		), (*Server).handleStatus, ""},
 		{mcpgo.NewTool("windows",
-			mcpgo.WithDescription("List the application's windows (BrowserWindow, WebContentsView, <webview>) with their index, title and URL. Pass window: <index> to the other tools to target one; 0 is the first window seen."),
+			mcpgo.WithDescription("List the application's windows (Electron: BrowserWindow, WebContentsView, <webview>; Tauri: webview windows, with their label) with their index, title and URL. Pass window: <index> to the other tools to target one; 0 is the first window seen."),
 			mcpgo.WithString("session", sessionProp()),
 			mcpgo.WithTitleAnnotation("List windows"), mcpgo.WithReadOnlyHintAnnotation(true), mcpgo.WithOpenWorldHintAnnotation(false),
-		), (*Server).handleWindows},
+		), (*Server).handleWindows, ""},
 		{mcpgo.NewTool("logs",
-			mcpgo.WithDescription("Renderer console messages and uncaught exceptions of every window, failed network requests, the main process console (via its inspector) and the process stdout/stderr, oldest first. Default: the last 100 entries; errors: true keeps only errors, warnings, exceptions and stderr."),
+			mcpgo.WithDescription("Console messages and uncaught exceptions of every window, the process stdout/stderr, and per framework: Electron's failed network requests and main process console (via its inspector); Tauri's IPC calls (every command the page invoked, its duration and outcome: source ipc) and the JavaScript dialogs answered. Oldest first. Default: the last 100 entries; errors: true keeps only errors, warnings, exceptions and stderr."),
 			mcpgo.WithString("session", sessionProp()),
 			mcpgo.WithNumber("last", mcpgo.Description("Number of entries to return (default 100)."), mcpgo.DefaultNumber(100)),
 			mcpgo.WithBoolean("errors", mcpgo.Description("Only errors, warnings, exceptions and stderr."), mcpgo.DefaultBool(false)),
 			mcpgo.WithString("contains", mcpgo.Description("Keep entries containing this text (case-insensitive).")),
-			mcpgo.WithString("source", mcpgo.Description("Keep one source: console, exception, network, page, main, stdout, stderr.")),
+			mcpgo.WithString("source", mcpgo.Description("Keep one source: console, exception, network, page, main, ipc, stdout, stderr.")),
 			mcpgo.WithNumber("since_seconds", mcpgo.Description("Only entries newer than this many seconds.")),
 			mcpgo.WithNumber("window", mcpgo.Description("Only this window's renderer entries (process output is always included).")),
 			mcpgo.WithTitleAnnotation("Read logs"), mcpgo.WithReadOnlyHintAnnotation(true), mcpgo.WithOpenWorldHintAnnotation(false),
-		), (*Server).handleLogs},
+		), (*Server).handleLogs, ""},
 		{mcpgo.NewTool("stop",
 			mcpgo.WithDescription("Close a session. An application started by launch is terminated with every process it spawned and its private profile removed; an attached one keeps running. The session's saved screenshots and flow outputs are deleted too, unless keep_artifacts is true."),
 			mcpgo.WithString("session", sessionProp()),
 			mcpgo.WithBoolean("keep_artifacts", mcpgo.Description("Leave the session's screenshots and flow outputs on disk (evidence still needed). Default false: they are deleted with the session."), mcpgo.DefaultBool(false)),
 			mcpgo.WithTitleAnnotation("Stop application"), mcpgo.WithDestructiveHintAnnotation(true), mcpgo.WithOpenWorldHintAnnotation(false),
-		), (*Server).handleStop},
+		), (*Server).handleStop, ""},
 	}
 }
 
@@ -114,7 +116,7 @@ func stringMap(req mcpgo.CallToolRequest, key string) (map[string]string, error)
 }
 
 func (s *Server) handleLaunch(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-	var spec electron.LaunchSpec
+	var spec desktop.LaunchSpec
 	var err error
 	spec.Target = mcpgo.ParseString(req, "target", "")
 	if spec.Command, err = stringSlice(req, "command"); err != nil {
@@ -131,6 +133,13 @@ func (s *Server) handleLaunch(ctx context.Context, req mcpgo.CallToolRequest) (*
 	spec.Inspect = mcpgo.ParseBoolean(req, "inspect", true)
 	spec.StartupTimeout = time.Duration(mcpgo.ParseInt(req, "startup_timeout_ms", 0)) * time.Millisecond
 	spec.Name = mcpgo.ParseString(req, "name", "")
+	switch fw := strings.ToLower(mcpgo.ParseString(req, "framework", "auto")); fw {
+	case "", "auto":
+	case desktop.FrameworkElectron, desktop.FrameworkTauri:
+		spec.Framework = fw
+	default:
+		return errorf("framework must be auto, electron or tauri")
+	}
 	sess, err := s.mgr.Launch(ctx, spec)
 	if err != nil {
 		return errResult(err)
@@ -139,9 +148,10 @@ func (s *Server) handleLaunch(ctx context.Context, req mcpgo.CallToolRequest) (*
 }
 
 func (s *Server) handleAttach(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-	sess, reused, err := s.mgr.AttachOrReuse(ctx, electron.AttachSpec{
+	sess, reused, err := s.mgr.AttachOrReuse(ctx, desktop.AttachSpec{
 		Endpoint:  mcpgo.ParseString(req, "endpoint", ""),
 		Inspector: mcpgo.ParseString(req, "inspector_endpoint", ""),
+		Token:     mcpgo.ParseString(req, "token", ""),
 		Name:      mcpgo.ParseString(req, "name", ""),
 	})
 	if err != nil {
@@ -154,10 +164,10 @@ func (s *Server) handleAttach(ctx context.Context, req mcpgo.CallToolRequest) (*
 }
 
 // sessionResult describes a new session and shows its first window.
-func (s *Server) sessionResult(ctx context.Context, sess *electron.Session, verb string) (*mcpgo.CallToolResult, error) {
+func (s *Server) sessionResult(ctx context.Context, sess *desktop.Session, verb string) (*mcpgo.CallToolResult, error) {
 	st := sess.Status()
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "%s %s as session %s (pid %d, cdp %s", verb, st.Name, st.ID, st.PID, st.Endpoint)
+	fmt.Fprintf(&sb, "%s %s as session %s (%s app, pid %d, %s %s", verb, st.Name, st.ID, st.Framework, st.PID, st.Backend, st.Endpoint)
 	if st.Inspector != "" {
 		if st.MainProc {
 			fmt.Fprintf(&sb, ", main inspector %s", st.Inspector)
@@ -172,18 +182,22 @@ func (s *Server) sessionResult(ctx context.Context, sess *electron.Session, verb
 	if st.Note != "" {
 		fmt.Fprintf(&sb, "\nnote: %s", st.Note)
 	}
-	b, err := sess.Browser(ctx)
+	app, err := sess.App(ctx)
 	if err != nil {
 		fmt.Fprintf(&sb, "\n%v", err)
 		return text(sb.String())
 	}
-	wins, err := b.Windows()
+	wins, err := app.Windows(ctx)
 	if err != nil || len(wins) == 0 {
 		sb.WriteString("\nno window yet: call snapshot once the app has opened one")
 		return text(sb.String())
 	}
 	sb.WriteString("\n" + windowsText(wins))
-	snap, err := s.snapshotText(sess, b, 0, "content", "", true)
+	var snap string
+	w, err := app.Window(ctx, 0)
+	if err == nil {
+		snap, err = s.snapshotText(ctx, sess, w, "content", "", true)
+	}
 	if err != nil {
 		fmt.Fprintf(&sb, "\nsnapshot: %v", err)
 	} else {
@@ -200,15 +214,18 @@ func (s *Server) handleStatus(ctx context.Context, req mcpgo.CallToolRequest) (*
 	var sb strings.Builder
 	for _, sess := range sessions {
 		st := sess.Status()
-		var wins []engine.WindowInfo
+		var wins []driver.WindowInfo
 		var winErr error
-		if st.State == electron.StateRunning {
-			var b *engine.Browser
-			if b, winErr = sess.Browser(ctx); winErr == nil {
-				wins, winErr = b.Windows()
+		if st.State == desktop.StateRunning {
+			var app driver.App
+			if app, winErr = sess.App(ctx); winErr == nil {
+				wins, winErr = app.Windows(ctx)
 			}
 		}
 		sb.WriteString(statusText(st, wins, winErr))
+		if tool, since := sess.Busy(); tool != "" {
+			fmt.Fprintf(&sb, "\n  busy: %s running for %s (actions of this session wait for it)", tool, time.Since(since).Round(time.Second))
+		}
 		sb.WriteString("\n")
 	}
 	return text(strings.TrimRight(sb.String(), "\n"))
@@ -217,13 +234,13 @@ func (s *Server) handleStatus(ctx context.Context, req mcpgo.CallToolRequest) (*
 // statusText renders one session for status. It reads only st and the
 // windows listed by the caller (none while the app is not running), so a
 // session caught mid-restart renders like any other.
-func statusText(st electron.Status, wins []engine.WindowInfo, winErr error) string {
+func statusText(st desktop.Status, wins []driver.WindowInfo, winErr error) string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "%s %q %s state=%s since %s", st.ID, st.Name, st.Mode, st.State, st.StateSince.Format("15:04:05"))
+	fmt.Fprintf(&sb, "%s %q %s %s state=%s since %s", st.ID, st.Name, st.Framework, st.Mode, st.State, st.StateSince.Format("15:04:05"))
 	if st.PID > 0 {
 		fmt.Fprintf(&sb, " pid=%d", st.PID)
 	}
-	fmt.Fprintf(&sb, " cdp=%s", st.Endpoint)
+	fmt.Fprintf(&sb, " %s=%s", st.Backend, st.Endpoint)
 	if st.Inspector != "" {
 		fmt.Fprintf(&sb, " inspector=%s(%s)", st.Inspector, map[bool]string{true: "connected", false: "not connected"}[st.MainProc])
 	}
@@ -249,7 +266,7 @@ func statusText(st electron.Status, wins []engine.WindowInfo, winErr error) stri
 		fmt.Fprintf(&sb, "\n  note: %s", st.Note)
 	}
 	switch {
-	case st.State != electron.StateRunning:
+	case st.State != desktop.StateRunning:
 	case winErr != nil:
 		fmt.Fprintf(&sb, "\n  windows: %v", winErr)
 	case len(wins) == 0:
@@ -265,11 +282,11 @@ func (s *Server) handleWindows(ctx context.Context, req mcpgo.CallToolRequest) (
 	if err != nil {
 		return errResult(err)
 	}
-	b, err := sess.Browser(ctx)
+	app, err := sess.App(ctx)
 	if err != nil {
 		return errResult(err)
 	}
-	wins, err := b.Windows()
+	wins, err := app.Windows(ctx)
 	if err != nil {
 		return errResult(err)
 	}
@@ -297,7 +314,7 @@ func (s *Server) handleLogs(ctx context.Context, req mcpgo.CallToolRequest) (*mc
 	if since > 0 {
 		cutoff = time.Now().Add(-time.Duration(since * float64(time.Second)))
 	}
-	var keep []electron.LogEntry
+	var keep []desktop.LogEntry
 	for _, e := range sess.Logs() {
 		if onlyErr && !e.IsError() {
 			continue
@@ -334,7 +351,7 @@ func (s *Server) handleLogs(ctx context.Context, req mcpgo.CallToolRequest) (*mc
 	return text(strings.TrimRight(sb.String(), "\n"))
 }
 
-func formatLog(e electron.LogEntry) string {
+func formatLog(e desktop.LogEntry) string {
 	var sb strings.Builder
 	sb.WriteString(e.Time.Format("15:04:05.000"))
 	sb.WriteString(" ")

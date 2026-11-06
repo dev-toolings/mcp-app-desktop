@@ -49,7 +49,7 @@ func sharedBrowser(t *testing.T) *Browser {
 			shared.skip = "no Chrome/Chromium installed"
 			return
 		}
-		dir, err := os.MkdirTemp("", "mcp-electron-engine-chrome-*")
+		dir, err := os.MkdirTemp("", "mcp-app-desktop-engine-chrome-*")
 		if err != nil {
 			shared.skip = fmt.Sprintf("temp profile: %v", err)
 			return

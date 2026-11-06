@@ -116,7 +116,7 @@ func requireLoopback(endpoint string) error {
 	}
 	ip := net.ParseIP(host)
 	if ip == nil || !ip.IsLoopback() {
-		return fmt.Errorf("connect: %q is not a loopback endpoint; mcp-electron only attaches to local applications", endpoint)
+		return fmt.Errorf("connect: %q is not a loopback endpoint; mcp-app-desktop only attaches to local applications", endpoint)
 	}
 	return nil
 }

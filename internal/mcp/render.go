@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/dev-toolings/mcp-electron/internal/engine"
+	"github.com/dev-toolings/mcp-app-desktop/internal/engine"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -56,3 +56,6 @@ func renderTree(result *engine.ExtractionResult) string {
 
 // legend is appended once to a full snapshot so the abbreviations are known.
 const legend = "tags: b button, a link, t textbox, c checkbox, r radio, s combobox, m menuitem, x tab, hN heading, txt text, li item, img image; ✓/✗ checked, off disabled; @N = ref for click/type/…"
+
+// jsonUnmarshalLoose decodes JSON text.
+func jsonUnmarshalLoose(raw string, out any) error { return json.Unmarshal([]byte(raw), out) }

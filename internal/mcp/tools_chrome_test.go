@@ -41,7 +41,7 @@ func startHeadlessChrome(t *testing.T) string {
 	if !ok {
 		t.Skip("no Chrome/Chromium installed")
 	}
-	dir, err := os.MkdirTemp("", "mcp-electron-tools-chrome-*")
+	dir, err := os.MkdirTemp("", "mcp-app-desktop-tools-chrome-*")
 	if err != nil {
 		t.Fatal(err)
 	}

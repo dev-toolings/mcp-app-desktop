@@ -38,7 +38,7 @@ type Step struct {
 	// Line is the 1-based YAML line of the command, for error reports.
 	Line int
 
-	// Target is the element in mcp-electron's target syntax (@ref, CSS,
+	// Target is the element in mcp-app-desktop's target syntax (@ref, CSS,
 	// getByRole/getByText/getByLabel), already built from the selector.
 	Target string
 	// Point is "x,y" (CSS pixels) or "x%,y%" (relative to the viewport).

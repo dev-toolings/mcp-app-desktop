@@ -7,12 +7,12 @@
   },
   "plugins": [
     {
-      "name": "mcp-electron",
-      "description": "Drive, inspect and debug Electron applications: launch a project or a .app in isolation, accessibility snapshots with refs, clicks and typing, console and main-process logs, screenshots, JavaScript in the renderer and the main process, Maestro-style flows.",
+      "name": "mcp-app-desktop",
+      "description": "Drive, inspect and debug Electron and Tauri desktop applications: launch a project, a .app or the dev command in isolation, accessibility snapshots with refs, clicks and typing, console, IPC and process logs, screenshots, JavaScript in windows and in Electron's main process, Tauri commands and events, Maestro-style flows.",
       "category": "development",
       "source": {
         "source": "github",
-        "repo": "dev-toolings/mcp-electron",
+        "repo": "dev-toolings/mcp-app-desktop",
         "ref": "dist"
       }
     }

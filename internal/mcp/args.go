@@ -8,20 +8,19 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dev-toolings/mcp-electron/internal/electron"
-	"github.com/dev-toolings/mcp-electron/internal/engine"
-	"github.com/go-rod/rod"
-	"github.com/go-rod/rod/lib/proto"
+	"github.com/dev-toolings/mcp-app-desktop/internal/desktop"
+	"github.com/dev-toolings/mcp-app-desktop/internal/driver"
+	"github.com/dev-toolings/mcp-app-desktop/internal/engine"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 )
 
 // session resolves the session argument (the only session when omitted).
-func (s *Server) session(req mcpgo.CallToolRequest) (*electron.Session, error) {
+func (s *Server) session(req mcpgo.CallToolRequest) (*desktop.Session, error) {
 	return s.mgr.Get(strings.TrimSpace(mcpgo.ParseString(req, "session", "")))
 }
 
 // pageFn is the body of a tool that works on one window of one session.
-type pageFn func(sess *electron.Session, b *engine.Browser, page *rod.Page) (*mcpgo.CallToolResult, error)
+type pageFn func(sess *desktop.Session, w driver.Window) (*mcpgo.CallToolResult, error)
 
 // withPage resolves the session and window, serialises UI actions on the
 // session, and runs fn. Errors become tool errors, never protocol errors, so
@@ -37,8 +36,23 @@ func (s *Server) withPage(ctx context.Context, req mcpgo.CallToolRequest, fn pag
 // trace 2026-10-24). Flows, which chain many steps, are not bounded by it.
 const pageCallCeiling = 3 * time.Minute
 
+// actionWait is how long a page action waits for the previous action of the
+// same session before answering « busy » instead of queueing behind it.
+const actionWait = 15 * time.Second
+
 // withPageWithin is withPage bounded by limit (0: only by ctx).
 func (s *Server) withPageWithin(ctx context.Context, req mcpgo.CallToolRequest, limit time.Duration, fn pageFn) (*mcpgo.CallToolResult, error) {
+	return s.runOnPage(ctx, req, limit, true, fn)
+}
+
+// observePage runs a read of the window (snapshot, screenshot, eval) without
+// waiting for the session's action gate: while an action is stuck, they are
+// how the agent sees why. Bounded by the same ceiling as an action.
+func (s *Server) observePage(ctx context.Context, req mcpgo.CallToolRequest, fn pageFn) (*mcpgo.CallToolResult, error) {
+	return s.runOnPage(ctx, req, pageCallCeiling, false, fn)
+}
+
+func (s *Server) runOnPage(ctx context.Context, req mcpgo.CallToolRequest, limit time.Duration, exclusive bool, fn pageFn) (*mcpgo.CallToolResult, error) {
 	sess, err := s.session(req)
 	if err != nil {
 		return errResult(err)
@@ -49,13 +63,18 @@ func (s *Server) withPageWithin(ctx context.Context, req mcpgo.CallToolRequest, 
 		defer cancel()
 	}
 	window := mcpgo.ParseInt(req, "window", 0)
-	sess.Actions().Lock()
-	defer sess.Actions().Unlock()
-	b, page, err := sess.Page(ctx, window)
+	if exclusive {
+		release, err := sess.AcquireActions(ctx, req.Params.Name, actionWait)
+		if err != nil {
+			return errResult(err)
+		}
+		defer release()
+	}
+	w, err := sess.Window(ctx, window)
 	if err != nil {
 		return errResult(err)
 	}
-	res, err := fn(sess, b, page)
+	res, err := fn(sess, w)
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) && limit > 0 && res != nil && res.IsError {
 		res.Content = append(res.Content, mcpgo.NewTextContent(fmt.Sprintf("\n(the call reached the %s ceiling of a page tool: the window stopped answering; check status and logs)", limit)))
 	}
@@ -165,110 +184,29 @@ func evalTimeout(req mcpgo.CallToolRequest) time.Duration {
 	return time.Duration(ms) * time.Millisecond
 }
 
-// resolve waits for the target to be visible and returns the element.
-func resolve(page *rod.Page, b *engine.Browser, target string, timeout time.Duration) (*rod.Element, error) {
-	if target == "" {
-		return nil, fmt.Errorf("target is required (@ref from snapshot, a CSS selector, or getByRole/getByText/getByLabel)")
-	}
-	el, err := engine.WaitForTarget(page, target, b.Snapshot(page), engine.StateVisible, timeout)
-	if err != nil {
-		return nil, err
-	}
-	if el == nil {
-		return nil, fmt.Errorf("%s: not found", target)
-	}
-	if err := engine.EnsureActionable(el, timeout); err != nil {
-		return nil, fmt.Errorf("%s: %w", target, err)
-	}
-	return el, nil
-}
-
-// hoverMode is the click tool's hover_first: auto (absent) hovers only a
-// target hidden by visibility or opacity, always also reveals a
-// display:none target through its nearest rendered ancestor, never keeps
-// the strict visible-and-actionable wait.
-type hoverMode int
-
-const (
-	hoverAuto hoverMode = iota
-	hoverAlways
-	hoverNever
-)
-
-func parseHoverMode(req mcpgo.CallToolRequest) hoverMode {
+// parseHoverMode reads the click tool's hover_first: absent is auto (hover
+// only a target hidden by visibility or opacity), true always hovers first,
+// false never does.
+func parseHoverMode(req mcpgo.CallToolRequest) driver.HoverMode {
 	v, ok := req.GetArguments()["hover_first"]
 	if !ok || v == nil {
-		return hoverAuto
+		return driver.HoverAuto
 	}
 	if b, ok := v.(bool); ok {
 		if b {
-			return hoverAlways
+			return driver.HoverAlways
 		}
-		return hoverNever
+		return driver.HoverNever
 	}
-	return hoverAuto
+	return driver.HoverAuto
 }
 
-// resolveClickable resolves a click target. A target that only shows on
-// hover (per-row buttons styled with :hover) is revealed with a real mouse
-// move over it (or over its row) before the usual actionability checks, so
-// the click that follows is a real mouse event on a visible element.
-func resolveClickable(page *rod.Page, b *engine.Browser, target string, timeout time.Duration, mode hoverMode) (el *rod.Element, note string, err error) {
-	if mode == hoverNever {
-		el, err := resolve(page, b, target, timeout)
-		return el, "", err
-	}
-	if target == "" {
-		return nil, "", fmt.Errorf("target is required (@ref from snapshot, a CSS selector, or getByRole/getByText/getByLabel)")
-	}
-	deadline := time.Now().Add(timeout)
-	el, err = engine.WaitForTarget(page, target, b.Snapshot(page), engine.StateAttached, timeout)
-	if err != nil {
-		return nil, "", err
-	}
-	if el == nil {
-		return nil, "", fmt.Errorf("%s: not found", target)
-	}
-	reveal, err := engine.InspectHoverReveal(el)
-	if err != nil {
-		if mode == hoverAlways {
-			return nil, "", fmt.Errorf("%s: %w", target, err)
-		}
-		// Auto mode only reveals boxed elements; anything else takes the
-		// ordinary path, which waits for the target to show up.
-		reveal = nil
-	}
-	hover := reveal != nil && (mode == hoverAlways || reveal.HiddenBy == "visibility" || reveal.HiddenBy == "opacity")
-	if !hover {
-		el, err := resolve(page, b, target, max(time.Until(deadline), time.Second))
-		return el, "", err
-	}
-	if err := engine.HoverToReveal(page, reveal); err != nil {
-		return nil, "", fmt.Errorf("%s: %w", target, err)
-	}
-	if reveal.HiddenBy != "" {
-		note = fmt.Sprintf(" (revealed by hovering, was hidden by %s)", reveal.HiddenBy)
-		if reveal.Ancestor != "" {
-			note = fmt.Sprintf(" (revealed by hovering %s, was hidden by %s)", reveal.Ancestor, reveal.HiddenBy)
-		}
-	}
-	if err := engine.EnsureActionable(el, max(time.Until(deadline), time.Second)); err != nil {
-		if reveal.HiddenBy != "" {
-			return nil, "", fmt.Errorf("%s: %w (it was hidden by %s and hovering it did not reveal it)", target, err, reveal.HiddenBy)
-		}
-		return nil, "", fmt.Errorf("%s: %w", target, err)
-	}
-	return el, note, nil
-}
-
-func parseButton(s string) (proto.InputMouseButton, error) {
-	switch strings.ToLower(strings.TrimSpace(s)) {
+func parseButton(s string) (string, error) {
+	switch b := strings.ToLower(strings.TrimSpace(s)); b {
 	case "", "left":
-		return proto.InputMouseButtonLeft, nil
-	case "right":
-		return proto.InputMouseButtonRight, nil
-	case "middle":
-		return proto.InputMouseButtonMiddle, nil
+		return "left", nil
+	case "right", "middle":
+		return b, nil
 	}
 	return "", fmt.Errorf("button must be left, right or middle")
 }
@@ -277,16 +215,16 @@ func snapshotMode(req mcpgo.CallToolRequest) (engine.SnapshotMode, error) {
 	return engine.ParseSnapshotMode(mcpgo.ParseString(req, "snapshot", "diff"))
 }
 
-// mutate runs an action and reports what changed on the page according to
-// the snapshot mode: nothing, a diff of the interactive elements, or the
+// mutate runs an action and reports what changed on the window according
+// to the snapshot mode: nothing, a diff of the interactive elements, or the
 // whole skeleton.
-func mutate(b *engine.Browser, page *rod.Page, mode engine.SnapshotMode, summary string, act func() error) (*mcpgo.CallToolResult, error) {
-	return mutateWith(b, page, mode, func() string { return summary }, act)
+func mutate(ctx context.Context, w driver.Window, mode engine.SnapshotMode, summary string, act func() error) (*mcpgo.CallToolResult, error) {
+	return mutateWith(ctx, w, mode, func() string { return summary }, act)
 }
 
 // mutateWith is mutate with a summary computed after the action ran.
-func mutateWith(b *engine.Browser, page *rod.Page, mode engine.SnapshotMode, summaryFn func() string, act func() error) (*mcpgo.CallToolResult, error) {
-	prev := b.Snapshot(page)
+func mutateWith(ctx context.Context, w driver.Window, mode engine.SnapshotMode, summaryFn func() string, act func() error) (*mcpgo.CallToolResult, error) {
+	prev := w.Refs()
 	if err := act(); err != nil {
 		return errResult(err)
 	}
@@ -294,7 +232,7 @@ func mutateWith(b *engine.Browser, page *rod.Page, mode engine.SnapshotMode, sum
 	if mode == engine.SnapshotModeNone {
 		return text(summary)
 	}
-	diff, result, err := engine.CaptureMutation(b, page, prev)
+	diff, result, err := w.Mutation(ctx, prev)
 	if err != nil {
 		return textf("%s\n(page changed but could not be re-read: %v)", summary, err)
 	}

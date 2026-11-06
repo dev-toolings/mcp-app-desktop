@@ -16,7 +16,8 @@ permissions:
 jobs:
   check:
     # One Linux job: the binaries are pure Go, so every target cross-compiles
-    # here, and the short suite needs neither a display nor Electron.
+    # here, and the short suite needs neither a display nor an app (the Rust
+    # plugin is built locally, by the Tauri fixture).
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -38,4 +39,4 @@ jobs:
       - name: Assemble plugin (universal macOS binary)
         run: bun scripts/release.ts plugin "$(jq -r .version plugin/.claude-plugin/plugin.json)"
       - name: Launcher syntax
-        run: node --check npm/mcp-electron/bin/mcp-electron.js
+        run: node --check npm/mcp-app-desktop/bin/mcp-app-desktop.js

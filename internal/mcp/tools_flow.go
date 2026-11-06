@@ -8,10 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dev-toolings/mcp-electron/internal/electron"
-	"github.com/dev-toolings/mcp-electron/internal/engine"
-	"github.com/dev-toolings/mcp-electron/internal/flow"
-	"github.com/go-rod/rod"
+	"github.com/dev-toolings/mcp-app-desktop/internal/desktop"
+	"github.com/dev-toolings/mcp-app-desktop/internal/driver"
+	"github.com/dev-toolings/mcp-app-desktop/internal/flow"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -28,7 +27,7 @@ func (s *Server) flowTools() []toolDef {
 			mcpgo.WithString("session", sessionProp()),
 			mcpgo.WithNumber("window", windowProp()),
 			mcpgo.WithTitleAnnotation("Run flow"), mcpgo.WithOpenWorldHintAnnotation(false),
-		), (*Server).handleRunFlow},
+		), (*Server).handleRunFlow, ""},
 	}
 }
 
@@ -53,12 +52,12 @@ func (s *Server) handleRunFlow(ctx context.Context, req mcpgo.CallToolRequest) (
 		return errorf("give flow (YAML) or file")
 	}
 	timeout := lookupTimeout(req)
-	return s.withPageWithin(ctx, req, 0, func(sess *electron.Session, b *engine.Browser, page *rod.Page) (*mcpgo.CallToolResult, error) {
+	return s.withPageWithin(ctx, req, 0, func(sess *desktop.Session, w driver.Window) (*mcpgo.CallToolResult, error) {
 		outDir := filepath.Join(sess.Dir, "flows", time.Now().Format("150405"))
 		if err := os.MkdirAll(outDir, 0o700); err != nil {
 			return errResult(err)
 		}
-		r := &flow.Runner{Browser: b, Page: page, Press: pressKeys, OutDir: outDir, Env: env, LookupTimeout: timeout}
+		r := &flow.Runner{Window: w, OutDir: outDir, Env: env, LookupTimeout: timeout}
 		if main := sess.Main(); main != nil {
 			r.Main = func(ctx context.Context, expr string) (string, error) { return main.Eval(ctx, expr, 8*time.Second) }
 		}

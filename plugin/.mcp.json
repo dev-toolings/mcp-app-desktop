@@ -1,7 +1,7 @@
 {
   "mcpServers": {
-    "mcp-electron": {
-      "command": "${CLAUDE_PLUGIN_ROOT}/bin/mcp-electron"
+    "mcp-app-desktop": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/mcp-app-desktop"
     }
   }
 }

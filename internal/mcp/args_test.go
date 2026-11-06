@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-rod/rod/lib/input"
+	"github.com/dev-toolings/mcp-app-desktop/internal/driver"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -47,27 +47,8 @@ func TestEvalTimeoutAndHoverMode(t *testing.T) {
 			t.Errorf("evalTimeout(%v) = %s, want %s", c.args, got, c.want)
 		}
 	}
-	if parseHoverMode(req(map[string]any{})) != hoverAuto || parseHoverMode(req(map[string]any{"hover_first": true})) != hoverAlways || parseHoverMode(req(map[string]any{"hover_first": false})) != hoverNever {
+	if parseHoverMode(req(map[string]any{})) != driver.HoverAuto || parseHoverMode(req(map[string]any{"hover_first": true})) != driver.HoverAlways || parseHoverMode(req(map[string]any{"hover_first": false})) != driver.HoverNever {
 		t.Error("hover_first: absent → auto, true → always, false → never")
-	}
-}
-
-func TestParseKeyCombo(t *testing.T) {
-	mods, key, err := parseKeyCombo("cmd+shift+p")
-	if err != nil || len(mods) != 2 || mods[0] != input.MetaLeft || mods[1] != input.ShiftLeft || key != input.Key('p') {
-		t.Fatalf("cmd+shift+p → %v %v %v", mods, key, err)
-	}
-	if _, key, err := parseKeyCombo("Enter"); err != nil || key != input.Enter {
-		t.Fatalf("Enter → %v %v", key, err)
-	}
-	if _, key, err := parseKeyCombo("shift++"); err != nil || key != input.Key('+') {
-		t.Fatalf("shift++ → %v %v", key, err)
-	}
-	if _, _, err := parseKeyCombo("hyper+x"); err == nil {
-		t.Fatal("unknown modifier must fail")
-	}
-	if _, _, err := parseKeyCombo("é"); err == nil {
-		t.Fatal("non-US character must fail with a hint")
 	}
 }
 
@@ -80,8 +61,8 @@ func TestTimeoutAliasAndRoleBracketShorthand(t *testing.T) {
 	}
 	for in, want := range map[string]string{
 		`role=textbox[name="Message à l’agent"]`: `getByRole("textbox", { name: "Message à l’agent" })`,
-		`role=button[name='Save']`:              `getByRole("button", { name: "Save" })`,
-		`role=button[name=/^Mode/i]`:            `getByRole("button", { name: /^Mode/i })`,
+		`role=button[name='Save']`:               `getByRole("button", { name: "Save" })`,
+		`role=button[name=/^Mode/i]`:             `getByRole("button", { name: /^Mode/i })`,
 	} {
 		if got := normalizeTarget(in); got != want {
 			t.Errorf("%q → %q, want %q", in, got, want)
