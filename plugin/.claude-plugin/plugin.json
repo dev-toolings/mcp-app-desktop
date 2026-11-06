@@ -1,6 +1,6 @@
 {
   "name": "mcp-app-desktop",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "MCP server and skill to drive, inspect and debug Electron and Tauri desktop applications from Claude Code: launch in isolation or attach, accessibility snapshots with refs, actions, logs, screenshots, JavaScript in windows and in Electron's main process, Tauri commands and events, Maestro-style flows.",
   "author": {
     "name": "dev-toolings"

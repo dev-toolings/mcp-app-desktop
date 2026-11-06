@@ -1,6 +1,6 @@
 {
   "name": "@dev-toolings/mcp-app-desktop",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "MCP server to drive, inspect and debug Electron and Tauri desktop applications from a coding agent.",
   "keywords": [
     "electron",
@@ -25,9 +25,9 @@
     "node": ">=18"
   },
   "optionalDependencies": {
-    "@dev-toolings/mcp-app-desktop-darwin-arm64": "0.1.0",
-    "@dev-toolings/mcp-app-desktop-darwin-x64": "0.1.0",
-    "@dev-toolings/mcp-app-desktop-win32-arm64": "0.1.0",
-    "@dev-toolings/mcp-app-desktop-win32-x64": "0.1.0"
+    "@dev-toolings/mcp-app-desktop-darwin-arm64": "0.2.0",
+    "@dev-toolings/mcp-app-desktop-darwin-x64": "0.2.0",
+    "@dev-toolings/mcp-app-desktop-win32-arm64": "0.2.0",
+    "@dev-toolings/mcp-app-desktop-win32-x64": "0.2.0"
   }
 }
