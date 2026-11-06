@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "mcp-app-desktop": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/mcp-app-desktop"
+    }
+  }
+}
