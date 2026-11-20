@@ -31,3 +31,13 @@ func signalPID(pid int, kill bool) {
 
 // processGroupOf returns the process group of pid.
 func processGroupOf(pid int) (int, error) { return syscall.Getpgid(pid) }
+
+// groupAlive reports whether any process of the group remains (one that
+// belongs to another user counts: it exists).
+func groupAlive(pgid int) bool {
+	if pgid <= 1 {
+		return true
+	}
+	err := syscall.Kill(-pgid, 0)
+	return err == nil || err == syscall.EPERM
+}

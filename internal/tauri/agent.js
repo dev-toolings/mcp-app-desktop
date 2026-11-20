@@ -727,12 +727,129 @@
     return r.bottom > 0 && r.right > 0 && r.top < view.innerHeight && r.left < view.innerWidth;
   }
 
+  var SCROLLS = toSet('auto scroll overlay');
+
+  // A box a user can scroll with the wheel. The root counts only when neither
+  // html nor body hides its overflow: an app laid out as one fixed screen
+  // (overflow: hidden) never scrolls its root for a user.
+  function userScrollable(p) {
+    var doc = p.ownerDocument;
+    if (p === doc.documentElement || p === doc.body) {
+      var hs = style(doc.documentElement);
+      var bs = doc.body ? style(doc.body) : null;
+      var hiddenRoot = function (s) { return s && (/hidden|clip/.test(s.overflowY) || /hidden|clip/.test(s.overflowX)); };
+      return !hiddenRoot(hs) && !hiddenRoot(bs);
+    }
+    var s = style(p);
+    return !!s && (SCROLLS[s.overflowY] || SCROLLS[s.overflowX]);
+  }
+
+  // What clips p's descendants: overflow other than visible, a clip or a
+  // clip-path. The root is left to the viewport.
+  function clipsContent(p, s) {
+    if (p === p.ownerDocument.documentElement) return false;
+    return s.overflowX !== 'visible' || s.overflowY !== 'visible' || (s.clipPath && s.clipPath !== 'none') || (s.clip && s.clip !== 'auto');
+  }
+
+  // A clip that leaves nothing to see whatever the box: the visually-hidden
+  // patterns (clip-path: inset(50%), clip: rect(0 0 0 0)).
+  function clipsAll(s) {
+    return /^inset\(\s*50%/.test(s.clipPath || '') || /^rect\(\s*0(px)?[ ,]+0(px)?[ ,]+0(px)?[ ,]+0(px)?\s*\)$/.test(s.clip || '');
+  }
+
+  // The part of el's box left visible by its clipping ancestors and, when
+  // asked, by the viewport. innerOnly: only the ancestors below el's nearest
+  // scroll container, which scrolling moves along with el (the frames around
+  // a scroll container clip what is merely scrolled away).
+  function shownRect(el, opts) {
+    var r = el.getBoundingClientRect();
+    var box = { l: r.left, t: r.top, r: r.right, b: r.bottom };
+    var cut = function (l, t, rr, b) {
+      box = { l: Math.max(box.l, l), t: Math.max(box.t, t), r: Math.min(box.r, rr), b: Math.min(box.b, b) };
+    };
+    for (var p = el.parentElement; p && p.nodeType === 1; p = p.parentElement) {
+      if (opts.innerOnly && userScrollable(p)) break;
+      var s = style(p);
+      if (!s || !clipsContent(p, s)) continue;
+      if (clipsAll(s)) return { l: 0, t: 0, r: 0, b: 0 };
+      var pr = p.getBoundingClientRect();
+      cut(pr.left, pr.top, pr.right, pr.bottom);
+    }
+    if (opts.viewport) {
+      var view = el.ownerDocument.defaultView;
+      cut(0, 0, view.innerWidth, view.innerHeight);
+    }
+    return box;
+  }
+
+  function area(b) {
+    return Math.max(0, b.r - b.l) * Math.max(0, b.b - b.t);
+  }
+
+  // visuallyHidden: laid out and announced, but cut away by an ancestor no
+  // user can scroll (the sr-only input of a styled switch or checkbox).
+  // Scrolling never shows it; its label is what a user clicks.
+  function visuallyHidden(el) {
+    var r = el.getBoundingClientRect();
+    if (r.width * r.height < 4) return false;
+    var s = style(el);
+    if (s && clipsAll(s)) return true;
+    return area(shownRect(el, { innerOnly: true, viewport: false })) < 4;
+  }
+
+  // The element a pointer reaches instead of a visually hidden control: its
+  // first visible label, else the label around it.
+  function pointerStandIn(el) {
+    var labels = el.labels ? Array.prototype.slice.call(el.labels) : [];
+    var around = el.closest && el.closest('label');
+    if (around && labels.indexOf(around) < 0) labels.push(around);
+    for (var i = 0; i < labels.length; i++) {
+      if (visible(labels[i]) && !visuallyHidden(labels[i])) return labels[i];
+    }
+    return null;
+  }
+
+  // shown: el's centre lies inside what its clipping ancestors and the
+  // viewport leave visible.
+  function shown(el) {
+    var c = center(el);
+    var b = shownRect(el, { innerOnly: false, viewport: true });
+    return c.x >= b.l && c.x < b.r && c.y >= b.t && c.y < b.b;
+  }
+
+  // bringIntoView centres el by scrolling only what a user could scroll:
+  // scrollIntoView also moves boxes with overflow hidden (the root of an app
+  // laid out as one screen among them), which shifts the whole page; those
+  // are put back where they were.
+  function bringIntoView(el, force) {
+    if (!force && shown(el)) return;
+    var doc = el.ownerDocument;
+    var kept = [];
+    for (var p = el.parentElement; p && p.nodeType === 1; p = p.parentElement) {
+      if (!userScrollable(p)) kept.push([p, p.scrollLeft, p.scrollTop]);
+    }
+    var root = doc.scrollingElement;
+    if (root && !userScrollable(root)) kept.push([root, root.scrollLeft, root.scrollTop]);
+    el.scrollIntoView({ block: 'center', inline: 'center' });
+    for (var i = 0; i < kept.length; i++) {
+      var k = kept[i];
+      if (k[0].scrollLeft !== k[1]) k[0].scrollLeft = k[1];
+      if (k[0].scrollTop !== k[2]) k[0].scrollTop = k[2];
+    }
+  }
+
   // actionable resolves loc and checks it can take a pointer action: visible
   // (or only hidden by opacity/visibility when reveal is allowed), enabled,
   // in view (scrolled there), not covered by another element.
   function actionable(loc, opts) {
     var el = resolve(loc);
     var note = '';
+    if (visible(el) && visuallyHidden(el)) {
+      var standIn = pointerStandIn(el);
+      if (!standIn) throw fail('hidden', describeLoc(loc) + ' is visually hidden (clipped by an ancestor) and has no visible label to click');
+      el = standIn;
+      note = ' (the control is visually hidden: its label <' + describe(standIn) + '> took the pointer)';
+    }
     if (!visible(el)) {
       var by = hiddenBy(el);
       var r = el.getBoundingClientRect();
@@ -746,8 +863,8 @@
       if (!opts.reveal) throw fail('hidden', describeLoc(loc) + ' is transparent (opacity 0): it only shows on hover; pass hover_first: true to click it anyway');
     }
     if (opts.enabled !== false && disabledOf(el)) throw fail('disabled', describeLoc(loc) + ' is disabled');
-    if (!inViewport(el)) el.scrollIntoView({ block: 'center', inline: 'center' });
-    if (!note && opts.hitTest !== false) {
+    bringIntoView(el, false);
+    if (!/hidden by/.test(note) && opts.hitTest !== false) {
       var c = center(el);
       var doc = el.ownerDocument;
       var hit = doc.elementFromPoint(c.x, c.y);
@@ -1316,7 +1433,8 @@
         }
         case 'scrollIntoView': {
           var sv = resolve(args.loc);
-          sv.scrollIntoView({ block: 'center', inline: 'center' });
+          if (visuallyHidden(sv)) sv = pointerStandIn(sv) || sv;
+          bringIntoView(sv, true);
           return {};
         }
         case 'scrollBy':
@@ -1328,7 +1446,8 @@
         }
         case 'rect': {
           var re = resolve(args.loc);
-          if (!inViewport(re)) re.scrollIntoView({ block: 'center', inline: 'center' });
+          if (visuallyHidden(re)) re = pointerStandIn(re) || re;
+          bringIntoView(re, false);
           return center(re);
         }
         case 'wheel':

@@ -31,3 +31,6 @@ func signalPID(pid int, kill bool) {
 
 // processGroupOf is unsupported: a dev command is never adopted on Windows.
 func processGroupOf(pid int) (int, error) { return 0, errors.New("no process groups on Windows") }
+
+// groupAlive cannot be told without process groups: assume it is.
+func groupAlive(pgid int) bool { return true }

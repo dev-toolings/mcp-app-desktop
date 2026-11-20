@@ -50,6 +50,11 @@ type drained struct {
 
 // Poll returns the entries logged since the previous poll in every window.
 func (p *LogPoller) Poll(ctx context.Context, a *App) []LogEntry {
+	if a.GPUI() {
+		// No console in a GPUI app: what it logs is its process output,
+		// which the session keeps (logs sources stdout and stderr).
+		return nil
+	}
 	wins, err := a.Windows(ctx)
 	if err != nil {
 		return nil

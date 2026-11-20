@@ -4,6 +4,13 @@
 // loopback port and evaluates scripts in its webviews. This package speaks
 // that protocol, installs a page agent in every webview it drives, and
 // implements driver.App and driver.Window on top of it.
+//
+// GPUI applications embed gpui-mcp-app-desktop, which serves the same
+// protocol and says so in its hello (framework "gpui"). It has no webview and
+// no JavaScript: it runs the page agent's operations natively (the agent
+// command, same operation names, arguments and answers as agent.js), so the
+// same App and Window drive it, minus what needs a DOM (eval, navigation,
+// <select>, file inputs).
 package tauri
 
 import (
@@ -27,9 +34,21 @@ const (
 // ProtocolVersion is the bridge protocol this server speaks.
 const ProtocolVersion = 1
 
+// FrameworkGPUI is what a GPUI app's bridge (gpui-mcp-app-desktop) names in
+// its hello; the Tauri plugin names no framework.
+const FrameworkGPUI = "gpui"
+
+// Bridge crates: the one a Tauri app registers, the one a GPUI app calls.
+const (
+	TauriPluginCrate = "tauri-plugin-mcp-app-desktop"
+	GPUIBridgeCrate  = "gpui-mcp-app-desktop"
+)
+
 // Hello is the plugin's identity, returned by the hello command.
 type Hello struct {
-	Protocol      int    `json:"protocol"`
+	Protocol int `json:"protocol"`
+	// Framework is FrameworkGPUI for a GPUI app, empty for Tauri.
+	Framework     string `json:"framework"`
 	PluginVersion string `json:"plugin_version"`
 	TauriVersion  string `json:"tauri_version"`
 	AppName       string `json:"app_name"`
@@ -93,9 +112,20 @@ func Dial(ctx context.Context, addr, token string) (*Client, error) {
 	}
 	if c.Hello.Protocol != ProtocolVersion {
 		c.Close()
-		return nil, fmt.Errorf("bridge at %s speaks protocol %d, this server %d: update tauri-plugin-mcp-app-desktop or the server", addr, c.Hello.Protocol, ProtocolVersion)
+		return nil, fmt.Errorf("bridge at %s speaks protocol %d, this server %d: update %s or the server", addr, c.Hello.Protocol, ProtocolVersion, c.BridgeCrate())
 	}
 	return c, nil
+}
+
+// GPUI reports whether the bridge is a GPUI app's (no webview, no JavaScript).
+func (c *Client) GPUI() bool { return c.Hello.Framework == FrameworkGPUI }
+
+// BridgeCrate names the crate serving this bridge, for messages.
+func (c *Client) BridgeCrate() string {
+	if c.GPUI() {
+		return GPUIBridgeCrate
+	}
+	return TauriPluginCrate
 }
 
 func requireLoopback(addr string) error {
@@ -195,6 +225,13 @@ func (c *Client) Call(ctx context.Context, cmd string, params map[string]any) (j
 	c.pending[id] = ch
 	c.mu.Unlock()
 	req["id"], req["cmd"] = id, cmd
+	// The time this call still has: the GPUI bridge never runs a request once its caller has
+	// stopped waiting (the Tauri plugin ignores the field).
+	if dl, ok := ctx.Deadline(); ok {
+		if left := time.Until(dl); left > 0 {
+			req["timeout_ms"] = left.Milliseconds()
+		}
+	}
 	line, err := json.Marshal(req)
 	if err != nil {
 		c.forget(id)

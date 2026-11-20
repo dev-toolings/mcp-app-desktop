@@ -141,6 +141,10 @@ var errNoResult = errors.New("the webview returned no result")
 // survive the native bridge (a Date makes WKWebView's JSON conversion abort
 // the app).
 func (a *App) evalRaw(ctx context.Context, label, script string, timeout time.Duration) (string, error) {
+	if a.GPUI() {
+		// Never sent: the bridge would answer an unknown command anyway.
+		return "", fmt.Errorf("eval: %w", a.noJavaScript(ctx))
+	}
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
@@ -194,9 +198,53 @@ func retryable(err error) bool {
 
 const installMarker = `{"__install":true}`
 
+// GPUI reports whether the app is a GPUI one (see the package comment).
+func (a *App) GPUI() bool { return a.c.GPUI() }
+
+// kind names the bridge in messages: Tauri or GPUI.
+func (a *App) kind() string {
+	if a.GPUI() {
+		return "GPUI"
+	}
+	return "Tauri"
+}
+
+// decodeAgent turns an agent answer into out, or into an *agentError when
+// it is the agent's failure envelope {"error", "code"}.
+func decodeAgent(op string, res []byte, out any) error {
+	var envelope struct {
+		Error string `json:"error"`
+		Code  string `json:"code"`
+	}
+	if err := json.Unmarshal(res, &envelope); err == nil && envelope.Error != "" {
+		return &agentError{Code: envelope.Code, Msg: envelope.Error}
+	}
+	if out == nil {
+		return nil
+	}
+	if err := json.Unmarshal(res, out); err != nil {
+		return fmt.Errorf("%s: unexpected answer %.200s: %w", op, res, err)
+	}
+	return nil
+}
+
+// runNative calls one agent operation through a GPUI bridge, which runs it
+// natively: nothing to install, no script.
+func (a *App) runNative(ctx context.Context, label, op string, args any, out any) error {
+	raw, err := a.c.Call(ctx, "agent", map[string]any{"label": label, "op": op, "args": args})
+	if err != nil {
+		return err
+	}
+	return decodeAgent(op, raw, out)
+}
+
 // run calls one agent operation in a webview, installing the agent first
-// when the document has none (a new page, a reload, an older agent).
+// when the document has none (a new page, a reload, an older agent). A GPUI
+// app runs the operation natively.
 func (a *App) run(ctx context.Context, label, op string, args any, out any) error {
+	if a.GPUI() {
+		return a.runNative(ctx, label, op, args, out)
+	}
 	argJSON, err := json.Marshal(args)
 	if err != nil {
 		return err
@@ -219,20 +267,7 @@ func (a *App) run(ctx context.Context, label, op string, args any, out any) erro
 			}
 			continue
 		}
-		var envelope struct {
-			Error string `json:"error"`
-			Code  string `json:"code"`
-		}
-		if err := json.Unmarshal([]byte(res), &envelope); err == nil && envelope.Error != "" {
-			return &agentError{Code: envelope.Code, Msg: envelope.Error}
-		}
-		if out == nil {
-			return nil
-		}
-		if err := json.Unmarshal([]byte(res), out); err != nil {
-			return fmt.Errorf("%s: unexpected answer %.200s: %w", op, res, err)
-		}
-		return nil
+		return decodeAgent(op, []byte(res), out)
 	}
 	return fmt.Errorf("%s: the page agent could not be installed in window %q (the page keeps reloading?)", op, label)
 }
@@ -260,6 +295,10 @@ func jsString(s string) string {
 // so the first snapshot is not an empty document: it returns as soon as the
 // window has text or an interactive element, or after d.
 func (a *App) WaitFirstPaint(ctx context.Context, d time.Duration) {
+	if a.GPUI() {
+		a.waitFirstNodes(ctx, d)
+		return
+	}
 	deadline := time.Now().Add(d)
 	const probe = `(function(){var b=document.body;return String(document.readyState==="complete"&&!!b&&(b.innerText.trim().length>0||!!document.querySelector("button,a,input,textarea,select,[role],[contenteditable]")));})()`
 	for time.Now().Before(deadline) && ctx.Err() == nil {
@@ -270,4 +309,78 @@ func (a *App) WaitFirstPaint(ctx context.Context, d time.Duration) {
 		}
 		time.Sleep(150 * time.Millisecond)
 	}
+}
+
+// gpuiTreeGrace bounds the wait for a GPUI window's first accessibility
+// node once the window exists: GPUI builds the tree on its first frame, so a
+// window still empty after that exposes no node at all (elements without
+// .id() and .role()), and waiting longer would only delay the launch.
+const gpuiTreeGrace = 3 * time.Second
+
+// waitFirstNodes is WaitFirstPaint for a GPUI app: it waits for the first
+// window (at most d), then for its tree to have a node (at most
+// gpuiTreeGrace more).
+func (a *App) waitFirstNodes(ctx context.Context, d time.Duration) {
+	deadline := time.Now().Add(d)
+	var seen time.Time
+	for time.Now().Before(deadline) && ctx.Err() == nil {
+		if labels, err := a.Labels(ctx); err == nil && len(labels) > 0 {
+			if seen.IsZero() {
+				seen = time.Now()
+			}
+			var ans struct {
+				Nodes []json.RawMessage `json:"nodes"`
+			}
+			if err := a.runNative(ctx, labels[0], "snapshot", map[string]any{"level": "content"}, &ans); err == nil && len(ans.Nodes) > 0 {
+				return
+			}
+			if time.Since(seen) > gpuiTreeGrace {
+				return
+			}
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+}
+
+// Commands lists the commands a GPUI app registered for invoke
+// (gpui_mcp_app_desktop::register).
+func (a *App) Commands(ctx context.Context) ([]string, error) {
+	if !a.GPUI() {
+		return nil, fmt.Errorf("commands: only a GPUI bridge lists its commands")
+	}
+	raw, err := a.c.Call(ctx, "commands", nil)
+	if err != nil {
+		return nil, fmt.Errorf("list the app's commands: %w", err)
+	}
+	var names []string
+	if err := json.Unmarshal(raw, &names); err != nil {
+		return nil, fmt.Errorf("list the app's commands: %w", err)
+	}
+	return names, nil
+}
+
+// noJavaScript is the error of anything needing JavaScript in a GPUI app. It
+// names the commands the app registered, the stand-in for eval.
+func (a *App) noJavaScript(ctx context.Context) error {
+	registered := "none registered yet"
+	lctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if names, err := a.Commands(lctx); err != nil {
+		registered = "could not list them: " + err.Error()
+	} else if len(names) > 0 {
+		registered = "registered: " + strings.Join(names, ", ")
+	}
+	return fmt.Errorf("no JavaScript in a GPUI app (%s): use invoke with a command the app registers with gpui_mcp_app_desktop::register(cx, \"name\", |args, window, cx| ...) (%s; invoke with an unknown command lists them too); read and drive the UI with snapshot, click, type, press", a.c.Hello.AppName, registered)
+}
+
+// Invoke calls a command a GPUI app registered, in window label (the first
+// one when empty), and returns its JSON answer.
+func (a *App) Invoke(ctx context.Context, label, command string, args any) (json.RawMessage, error) {
+	if !a.GPUI() {
+		return nil, fmt.Errorf("invoke %s: a Tauri command runs through the page (InvokeScript), not the bridge", command)
+	}
+	if args == nil {
+		args = map[string]any{}
+	}
+	return a.c.Call(ctx, "invoke", map[string]any{"label": label, "command": command, "args": args})
 }

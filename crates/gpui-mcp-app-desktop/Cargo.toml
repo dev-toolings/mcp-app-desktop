@@ -1,0 +1,48 @@
+[package]
+name = "gpui-mcp-app-desktop"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Loopback bridge that lets the mcp-app-desktop MCP server drive a GPUI app in development"
+license = "MIT"
+publish = false
+
+[lib]
+name = "gpui_mcp_app_desktop"
+
+[features]
+default = ["capture"]
+# Window screenshots through `Window::render_to_image`, which GPUI and its macOS platform only
+# build with their `test-support` feature. Without it the bridge answers `screenshot` with an error.
+capture = ["gpui/test-support", "dep:gpui-macos"]
+
+[dependencies]
+# The app’s own GPUI: the version gpui-kit 0.10 pins (`=0.3.12`), so the app links one copy.
+gpui = { package = "gpui-pre", version = "=0.3.12" }
+serde_json = "1"
+async-channel = "2"
+raw-window-handle = "0.6"
+regex = "1"
+image = { version = "0.25", default-features = false, features = ["png"] }
+log = "0.4"
+futures-lite = "2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+# Only for its `test-support` feature: the macOS window implements `render_to_image` with it.
+gpui-macos = { package = "gpui-pre-macos", version = "=0.3.12", optional = true, features = ["test-support"] }
+
+
+# The crate's own tests build GPUI without gpui-kit: compile its shaders at run time as gpui-kit
+# does, so no Metal toolchain is needed.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+gpui-macos = { package = "gpui-pre-macos", version = "=0.3.12", features = ["runtime_shaders"] }
+gpui-platform = { package = "gpui-pre-platform", version = "=0.3.12" }
+
+# An app with a real window: GPUI must own the main thread, which the test harness takes.
+[[test]]
+name = "unseen_window"
+harness = false
+
+# A standalone crate, not part of a workspace of this repository.
+[workspace]

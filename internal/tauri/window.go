@@ -234,16 +234,26 @@ func (w *Window) ClickAt(ctx context.Context, x, y float64, count int) error {
 }
 
 func (w *Window) Type(ctx context.Context, target, text string, o driver.TypeOptions) error {
-	args := map[string]any{"text": text, "append": o.Append, "submit": o.Submit}
+	args := map[string]any{"text": text, "append": o.Append, "submit": false}
+	var err error
 	if target == "" {
-		return w.app.run(ctx, w.label, "type", args, nil)
+		err = w.app.run(ctx, w.label, "type", args, nil)
+	} else {
+		l, perr := parseTarget(target)
+		if perr != nil {
+			return perr
+		}
+		args["loc"] = l
+		err = w.act(ctx, o.Timeout, target, "type", args, nil)
 	}
-	l, err := parseTarget(target)
-	if err != nil {
+	if err != nil || !o.Submit {
 		return err
 	}
-	args["loc"] = l
-	return w.act(ctx, o.Timeout, target, "type", args, nil)
+	// Enter goes in a call of its own, as a real key comes after the page has
+	// handled the input: in the same task, a framework that renders the typed
+	// value afterwards (React state) would submit what was there before. The
+	// typed element kept the focus, so the key reaches it.
+	return w.app.run(ctx, w.label, "press", map[string]any{"combo": map[string]any{"mods": []string{}, "key": "Enter"}}, nil)
 }
 
 func (w *Window) Select(ctx context.Context, target string, values []string, timeout time.Duration) error {
@@ -359,6 +369,10 @@ func (w *Window) Wheel(ctx context.Context, target string, x, y, dy float64, ste
 const maxUpload = 32 << 20
 
 func (w *Window) Upload(ctx context.Context, target string, files []string, timeout time.Duration) error {
+	if w.app.GPUI() {
+		// Before reading and sending the files: a GPUI window has no file input.
+		return fmt.Errorf("upload is not available in a GPUI app (no DOM, no file input): drive the app's own picker, or invoke a command it registers")
+	}
 	l, err := parseTarget(target)
 	if err != nil {
 		return err
@@ -579,7 +593,7 @@ func (w *Window) capture(ctx context.Context) (image.Image, error) {
 
 func (w *Window) Screenshot(ctx context.Context, o driver.ShotOptions) (driver.Shot, error) {
 	if o.FullPage {
-		return driver.Shot{}, fmt.Errorf("full_page is not available through the Tauri bridge (it captures what the webview shows): scroll and capture in steps, or capture an element (target)")
+		return driver.Shot{}, fmt.Errorf("full_page is not available through the %s bridge (it captures what the window shows): scroll and capture in steps, or capture an element (target)", w.app.kind())
 	}
 	var crop *image.Rectangle
 	if o.Target != "" {
@@ -602,6 +616,10 @@ func (w *Window) Screenshot(ctx context.Context, o driver.ShotOptions) (driver.S
 		scale := 1.0
 		if pi.W > 0 {
 			scale = float64(img.Bounds().Dx()) / pi.W
+		}
+		if p.Rect.W <= 0 || p.Rect.H <= 0 {
+			// The GPUI agent answers rect with the element's centre only.
+			return driver.Shot{}, fmt.Errorf("the %s bridge does not report the box of %s: capture the whole window (no target)", w.app.kind(), o.Target)
 		}
 		r := image.Rect(int(math.Floor(p.Rect.X*scale)), int(math.Floor(p.Rect.Y*scale)), int(math.Ceil((p.Rect.X+p.Rect.W)*scale)), int(math.Ceil((p.Rect.Y+p.Rect.H)*scale))).Intersect(img.Bounds())
 		if r.Empty() {
@@ -637,7 +655,7 @@ func encodeShot(img image.Image, crop *image.Rectangle, o driver.ShotOptions) (d
 			q = 60
 		}
 		if o.Format == "webp" {
-			shot.Note = "the Tauri bridge has no webp encoder: JPEG at the same quality"
+			shot.Note = "the bridge has no webp encoder: JPEG at the same quality"
 		}
 		shot.Format = "jpeg"
 		if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: q}); err != nil {
@@ -657,6 +675,9 @@ func encodeShot(img image.Image, crop *image.Rectangle, o driver.ShotOptions) (d
 // CSP forbids), so it is tried in turn as an expression, as statements whose
 // last one is returned, and as a function body.
 func (w *Window) Eval(ctx context.Context, expr, target string, timeout time.Duration) (string, error) {
+	if w.app.GPUI() {
+		return "", w.app.noJavaScript(ctx)
+	}
 	if timeout <= 0 {
 		timeout = 8 * time.Second
 	}
@@ -740,27 +761,67 @@ func (w *Window) Eval(ctx context.Context, expr, target string, timeout time.Dur
 }
 
 // evalBodies returns the async function bodies to try for a user
-// expression, most specific first.
+// expression, most specific first. A candidate that does not parse is not
+// free: the webview reports its SyntaxError to the page as an uncaught error,
+// which the app's own handlers (a dev server overlay, an error reporter) and
+// logs then see. So the expression form is never offered to code that starts
+// with a statement keyword (an invoke body starts with return), and comes
+// after the statement forms for code with a top-level ';' (several statements,
+// unless the ';' sits in a regex literal the scan cannot tell apart).
 func evalBodies(expr string) []string {
 	code := strings.TrimSpace(expr)
 	code = strings.TrimRight(code, "; \t\n")
-	bodies := []string{"return (\n" + code + "\n);"}
+	expression := "return (\n" + code + "\n);"
+	var bodies []string
+	statements := hasTopLevel(code, ';')
+	if !startsWithStatement(code) && !statements {
+		bodies = append(bodies, expression)
+	}
 	if head, last, ok := splitLast(code, ';'); ok {
 		bodies = append(bodies, head+";\nreturn (\n"+last+"\n);")
 	}
 	if head, last, ok := splitLast(code, '\n'); ok {
 		bodies = append(bodies, head+"\nreturn (\n"+last+"\n);")
 	}
+	if !startsWithStatement(code) && statements {
+		bodies = append(bodies, expression)
+	}
 	return append(bodies, expr)
 }
 
+// leadingStatements are the keywords that make code a statement, never an
+// expression. Not function, class, async or import: `function(){}`,
+// `class {}` and `import("x")` are expressions too.
+var leadingStatements = []string{"return", "const", "let", "var", "if", "for", "while", "do", "switch", "try", "throw", "export"}
+
+func startsWithStatement(code string) bool {
+	for _, kw := range leadingStatements {
+		rest, ok := strings.CutPrefix(code, kw)
+		if !ok {
+			continue
+		}
+		if rest == "" {
+			return true
+		}
+		c := rest[0]
+		// `returned`, `letter`, `$var` and `do_x` are identifiers, not keywords.
+		if !(c == '_' || c == '$' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= 0x80) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasTopLevel tells whether code has sep outside brackets, strings,
+// template literals and comments.
+func hasTopLevel(code string, sep byte) bool { return topLevelCut(code, sep) >= 0 }
+
 var statementKeywords = []string{"return", "const ", "let ", "var ", "if", "for", "while", "do ", "do{", "switch", "try", "throw ", "function", "class ", "import ", "export ", "async function", "{", "}", "//", "/*"}
 
-// splitLast splits code at its last top-level sep (outside brackets,
-// strings, template literals and comments) into the statements before it
-// and a final expression statement. ok is false when there is no such split
-// or the last statement is not an expression.
-func splitLast(code string, sep byte) (head, last string, ok bool) {
+// topLevelCut is the index of the last sep outside brackets, strings,
+// template literals and comments, or -1 (also for an unterminated comment).
+// A '\n' that ends a line comment counts.
+func topLevelCut(code string, sep byte) int {
 	depth := 0
 	var quote byte
 	cut := -1
@@ -792,7 +853,7 @@ func splitLast(code string, sep byte) (head, last string, ok bool) {
 			if i+1 < len(code) && code[i+1] == '*' {
 				end := strings.Index(code[i+2:], "*/")
 				if end < 0 {
-					return "", "", false
+					return -1
 				}
 				i += end + 3
 				continue
@@ -807,6 +868,15 @@ func splitLast(code string, sep byte) (head, last string, ok bool) {
 			}
 		}
 	}
+	return cut
+}
+
+// splitLast splits code at its last top-level sep (outside brackets,
+// strings, template literals and comments) into the statements before it
+// and a final expression statement. ok is false when there is no such split
+// or the last statement is not an expression.
+func splitLast(code string, sep byte) (head, last string, ok bool) {
+	cut := topLevelCut(code, sep)
 	if cut < 0 {
 		return "", "", false
 	}
@@ -827,7 +897,16 @@ func splitLast(code string, sep byte) (head, last string, ok bool) {
 
 // ---------------------------------------------------------------- navigation
 
+// noPages is the error of navigation in a GPUI app, which shows views, not
+// documents.
+func (w *Window) noPages(op string) error {
+	return fmt.Errorf("%s is not available in a GPUI app: it has no URL or page history, and no JavaScript to reload (its windows are views drawn by Rust). Reach another view through the UI (click, press), or invoke a command the app registers (gpui_mcp_app_desktop::register); restart the app with stop and launch", op)
+}
+
 func (w *Window) navigateAndWait(ctx context.Context, op string, args map[string]any, wait string) error {
+	if w.app.GPUI() {
+		return w.noPages(op)
+	}
 	before, err := w.info(ctx)
 	if err != nil {
 		return err
@@ -860,6 +939,9 @@ func (w *Window) History(ctx context.Context, delta int, wait string) error {
 }
 
 func (w *Window) Reload(ctx context.Context, ignoreCache bool) error {
+	if w.app.GPUI() {
+		return w.noPages("reload")
+	}
 	before, err := w.info(ctx)
 	if err != nil {
 		return err

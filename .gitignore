@@ -7,3 +7,4 @@
 /mcp-electron
 /examples/tauri-fixture/src-tauri/target/
 /examples/tauri-fixture/src-tauri/gen/
+/crates/*/target/

@@ -39,6 +39,42 @@ func TestEvalBodies(t *testing.T) {
 	}
 }
 
+// A candidate that does not parse raises a SyntaxError in the page, seen by
+// the app as an uncaught error: the first candidate must be the right one for
+// statements, invoke bodies and plain expressions.
+func TestEvalBodiesFirstCandidateParses(t *testing.T) {
+	invoke, err := InvokeScript("greet", map[string]any{"name": "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		expr  string
+		first string
+	}{
+		{"document.title", "return (\ndocument.title\n);"},
+		{"returned.value", "return (\nreturned.value\n);"},
+		{"letter + 1", "return (\nletter + 1\n);"},
+		{"import('/src/a.ts')", "return (\nimport('/src/a.ts')\n);"},
+		{"(async () => { const a = 1; return a })()", "return (\n(async () => { const a = 1; return a })()\n);"},
+		{"const a = 2; a * 21", "const a = 2;\nreturn (\na * 21\n);"},
+		{"const m = await f(); const s = m.x; ({ s })", "const m = await f(); const s = m.x;\nreturn (\n({ s })\n);"},
+		{"x(); y", "x();\nreturn (\ny\n);"},
+		{invoke, invoke},
+		{"return 1", "return 1"},
+		{"if (x) { y(); }", "if (x) { y(); }"},
+	} {
+		if got := evalBodies(c.expr)[0]; got != c.first {
+			t.Errorf("%q: first candidate %q, want %q", c.expr, got, c.first)
+		}
+	}
+	// A ';' in a regex literal looks like a statement separator: the
+	// expression form still comes before the plain body, which returns nothing.
+	bodies := evalBodies("/a;b/.test(x)")
+	if len(bodies) < 2 || bodies[len(bodies)-2] != "return (\n/a;b/.test(x)\n);" {
+		t.Errorf("regex with ';': %q", bodies)
+	}
+}
+
 func TestSplitLastIgnoresNestedAndQuoted(t *testing.T) {
 	for _, c := range []struct {
 		code string

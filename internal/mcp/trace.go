@@ -157,8 +157,9 @@ func (t *Tracer) Close() {
 	}
 }
 
-// traceArgs keeps what explains a call without copying what it typed: text is reduced to its
-// length, long strings are clipped.
+// traceArgs keeps what explains a call without copying what it typed or a secret it carried:
+// text is reduced to its length, a token and the secret-looking variables of env to a mark,
+// long strings are clipped.
 func traceArgs(tool string, args map[string]any) map[string]any {
 	out := make(map[string]any, len(args))
 	for k, v := range args {
@@ -166,16 +167,45 @@ func traceArgs(tool string, args map[string]any) map[string]any {
 		case string:
 			if k == "text" && (tool == "type" || tool == "fill_form") {
 				out[k] = fmt.Sprintf("<%d chars>", len([]rune(s)))
+			} else if k == "token" {
+				out[k] = traceRedacted
 			} else if len(s) > 300 {
 				out[k] = s[:300] + "…"
 			} else {
 				out[k] = s
 			}
+		case map[string]any:
+			if k != "env" {
+				out[k] = v
+				break
+			}
+			env := make(map[string]any, len(s))
+			for name, value := range s {
+				if secretName(name) {
+					value = traceRedacted
+				}
+				env[name] = value
+			}
+			out[k] = env
 		default:
 			out[k] = v
 		}
 	}
 	return out
+}
+
+// traceRedacted stands for a value the trace does not keep.
+const traceRedacted = "<redacted>"
+
+// secretName tells an environment variable that holds a secret by its name.
+func secretName(name string) bool {
+	upper := strings.ToUpper(name)
+	for _, mark := range []string{"TOKEN", "SECRET", "PASSWORD", "PASSPHRASE", "CREDENTIAL", "API_KEY", "APIKEY", "PRIVATE_KEY"} {
+		if strings.Contains(upper, mark) {
+			return true
+		}
+	}
+	return false
 }
 
 func resultText(res *mcpgo.CallToolResult) string {
@@ -280,12 +310,16 @@ func (t *Tracer) Wrap(tool string, h func(context.Context, mcpgo.CallToolRequest
 }
 
 // stuckAfter is when a call counts as stuck: the trace's threshold, or the
-// wait the call itself asked for (timeout_ms) plus a margin, so a wait_for of
-// 60 s is not dumped as stuck at 20 s.
+// wait the call itself asked for (timeout_ms, a launch's startup_timeout_ms)
+// plus a margin, so a wait_for of 60 s, or a tauri dev build given two
+// minutes, is not dumped as stuck at 20 s.
 func stuckAfter(base time.Duration, req mcpgo.CallToolRequest) time.Duration {
 	asked := time.Duration(mcpgo.ParseInt(req, "timeout_ms", 0)) * time.Millisecond
 	if asked <= 0 {
 		asked = time.Duration(mcpgo.ParseInt(req, "timeout", 0)) * time.Millisecond
+	}
+	if asked <= 0 {
+		asked = time.Duration(mcpgo.ParseInt(req, "startup_timeout_ms", 0)) * time.Millisecond
 	}
 	if asked <= 0 {
 		return base

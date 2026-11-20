@@ -1,7 +1,7 @@
 # mcp-app-desktop
 
 An MCP server dedicated to designing, driving and debugging **desktop
-applications built with Electron or Tauri** from an agent (Claude Code,
+applications built with Electron, Tauri or GPUI** from an agent (Claude Code,
 Codex, any MCP harness). It recognises the framework by itself and adapts its
 tool list to the sessions it holds. The page side is
 [ghostchrome](https://github.com/dev-toolings/ghostchrome)'s renderer engine
@@ -9,8 +9,8 @@ tool list to the sessions it holds. The page side is
 console/network observers); the host side launches a project, a `.app` or an
 executable in isolation, runs the project's own dev loop with automatic
 re-attach after restarts, tears process trees down, and talks to the
-framework's own side: the Node inspector of Electron's main process, or the
-commands and events of a Tauri app.
+framework's own side: the Node inspector of Electron's main process, the
+commands and events of a Tauri app, or the commands a GPUI app registers.
 
 The server reaches each kind of app through the channel it actually has:
 
@@ -29,7 +29,10 @@ The server reaches each kind of app through the channel it actually has:
        │      │
        │      └── tauri ── loopback bridge ─►  tauri-plugin-mcp-app-desktop
        │                   (NDJSON, token)     Tauri on macOS / Linux (WKWebView,
-       │                                       WebKitGTK: no DevTools protocol)
+       │                          │            WebKitGTK: no DevTools protocol)
+       │                          │
+       │                          └─────────►  gpui-mcp-app-desktop
+       │                                       GPUI (no webview: native agent)
        │
        ├── Node inspector ──────────────────►  Electron main process (eval_main)
        │
@@ -39,7 +42,10 @@ The server reaches each kind of app through the channel it actually has:
 Electron and WebView2 expose the Chrome DevTools Protocol, so they get the
 full engine. WebKit webviews do not: there, a page agent injected by the
 bridge reads the accessibility tree and acts with DOM events, behind the same
-tool contract (see [Tauri](#tauri)).
+tool contract (see [Tauri](#tauri)). A GPUI app has no webview at all: its
+bridge speaks the same protocol and runs the agent's operations natively on
+the window's accessibility tree, with real GPUI input events (see
+[GPUI](#gpui)).
 
 ## Install
 
@@ -148,6 +154,7 @@ toolchain), so the server keeps them bounded:
 | Page | `snapshot`, `click`, `type`, `fill_form`, `select`, `press`, `hover`, `drag`, `scroll`, `wheel`, `upload`, `wait_for`, `screenshot`, `eval`, `navigate`, `reload`, `dialog` |
 | Electron | `eval_main` |
 | Tauri | `invoke`, `emit` |
+| GPUI | `invoke` |
 | Flows | `run_flow` |
 
 The tool list is dynamic: the framework tools are listed only while a session
@@ -175,9 +182,11 @@ matching the target is visible.
 
 The framework comes from the target (`node_modules/electron`, a
 `src-tauri/tauri.conf.json`, `Electron Framework.framework` in a bundle, the
-`__TAURI_INTERNALS__` marker in a binary) or, for a dev command, from whatever
-answers first: the DevTools port or the Tauri bridge. `framework:
-electron|tauri` forces it.
+`__TAURI_INTERNALS__` marker in a binary, a `Cargo.toml` depending on
+`gpui-mcp-app-desktop`, that crate's name and `MCP_APP_DESKTOP_BRIDGE_PORT`
+in a binary) or, for a dev command, from whatever answers first: the DevTools
+port or the bridge, whose hello tells Tauri from GPUI. `framework:
+electron|tauri|gpui` forces it.
 
 - **Electron project directory** (`package.json` + `node_modules/electron`):
   runs the local Electron binary with `.` as the app. The app gets a private
@@ -189,24 +198,56 @@ electron|tauri` forces it.
   dev` / `npx` / `pnpm exec`… after its lockfile, `cargo tauri dev`
   otherwise). The first build can take minutes: the startup wait defaults to
   15 minutes for a Tauri dev command.
-- **`.app` bundle or executable**: Electron or Tauri (a debug build with the
-  plugin), recognised as above.
+- **GPUI project directory** (a Cargo package depending on
+  `gpui-mcp-app-desktop`, or a workspace with one such member): runs the
+  command its `[package.metadata.mcp-app-desktop] dev-command` (or
+  `[workspace.metadata…]`) names, e.g. `["make", "run"]`, else `cargo run`,
+  with `--features <f>` when the bridge is an optional dependency that
+  feature turns on (`automation` preferred). The manifest is read with
+  `cargo metadata --no-deps`. Startup waits up to 15 minutes, as for Tauri.
+- **`.app` bundle or executable**: Electron, Tauri (a debug build with the
+  plugin) or GPUI (a build with the bridge), recognised as above.
 - **Dev command** (`command: ["bun","run","dev"]`): the server exports
   `MCP_APP_DESKTOP_CDP_PORT`, `MCP_APP_DESKTOP_INSPECT_PORT`,
   `MCP_APP_DESKTOP_BRIDGE_PORT` and `MCP_APP_DESKTOP_BRIDGE_TOKEN` (on
   Windows also `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` with the DevTools
   port). An Electron dev script must pass the first two to Electron, e.g.
   `electron --remote-debugging-port=$MCP_APP_DESKTOP_CDP_PORT --inspect=127.0.0.1:$MCP_APP_DESKTOP_INSPECT_PORT .`;
-  a Tauri app reads the bridge variables through the plugin, nothing to pass.
+  a Tauri or GPUI app reads the bridge variables through its bridge crate,
+  nothing to pass.
   `${MCP_APP_DESKTOP_CDP_PORT}` and the others expand inside `command` and
   `env`; the former `MCP_ELECTRON_CDP_PORT` / `MCP_ELECTRON_INSPECT_PORT`
   are still exported and expanded. When the dev loop restarts the app, the
   session reports `restarting`, then re-attaches on its own; `status` shows
   the restart count.
+- **Private profile** (a dev command, a built Tauri or GPUI app): Electron has
+  `--user-data-dir`; a Tauri app keeps its data under its bundle identifier,
+  and many apps read their data directory from a variable of their own. A
+  launch that names `${MCP_APP_DESKTOP_PROFILE_DIR}` or
+  `${MCP_APP_DESKTOP_PROFILE_ID}` in `command`, `args` or `env` gets a
+  private directory (0700) and a unique identifier segment
+  (`mcp` + 12 hexadecimal digits), e.g.
+  `command: ["bun","run","tauri","dev","--config","{\"identifier\":\"com.example.app.${MCP_APP_DESKTOP_PROFILE_ID}\"}"]`
+  with `env: {"APP_DATA_DIR": "${MCP_APP_DESKTOP_PROFILE_DIR}/data"}`. `stop`
+  deletes the directory and the entries of the system's application data
+  directories whose name ends with that segment (the app data, cache,
+  WebKit and saved state of that identifier), and lists them in
+  `profile_removed`; an identifier it did not generate is never matched. The
+  profile follows a dev command across servers (the one that adopts the
+  command removes it), is kept when the app could not be stopped, and is
+  removed at the next launch of the same command when the command died
+  without `stop`. Nothing is created for a launch that names neither
+  placeholder; an Electron target refuses them (it has `isolate`).
 - **Attach**: `attach` with `http://127.0.0.1:PORT` of an Electron app
   started with `--remote-debugging-port`, of a Tauri app on Windows started
-  with WebView2's, or the bridge port of a Tauri app (`token` when the app
-  was given one). Attached apps are never killed. Attaching to an endpoint a
+  with WebView2's, or the bridge port of a Tauri or GPUI app (`token` when
+  the app was given one). A dev script that opens the bridge itself can write
+  `{"endpoint": "127.0.0.1:PORT", "token": "…"}` to a file of mode 0600:
+  `attach` with `bridge_file` reads it, so the token goes from the file to
+  the bridge without entering the conversation (a symbolic link, or a file
+  other users can read, is refused). The trace never keeps a `token`
+  argument, nor the `env` values of a `launch` whose name tells a secret
+  (`TOKEN`, `SECRET`, `PASSWORD`, `API_KEY`…). Attached apps are never killed. Attaching to an endpoint a
   session already drives returns that session, which follows the app's
   restarts on the same port by itself.
 - **Hidden windows** (CDP): every window gets focus emulation (plus
@@ -258,6 +299,62 @@ What differs from CDP when driving through the bridge:
 - `invoke` / `emit` call the app's commands and events from a window, with
   its capabilities. They also work on Windows over CDP.
 
+## GPUI
+
+A GPUI app has no webview and no JavaScript. It calls
+`gpui-mcp-app-desktop` in its debug builds (the bridge refuses to open in a release build):
+
+```toml
+# Cargo.toml
+[dependencies]
+gpui-mcp-app-desktop = { git = "https://github.com/dev-toolings/mcp-app-desktop", optional = true }
+
+[features]
+automation = ["dep:gpui-mcp-app-desktop"]
+
+# optional: how launch runs the project (default: cargo run --features automation)
+[package.metadata.mcp-app-desktop]
+dev-command = ["make", "run"]
+```
+
+```rust
+application().run(|cx| {
+    #[cfg(feature = "automation")]
+    gpui_mcp_app_desktop::init(cx);
+    // optional: what invoke can call (the stand-in for eval)
+    #[cfg(feature = "automation")]
+    gpui_mcp_app_desktop::register(cx, "state", |_args, _window, _cx| Ok(serde_json::json!({})));
+    // …
+});
+```
+
+Like the Tauri plugin, the bridge is inert unless `MCP_APP_DESKTOP_BRIDGE_PORT`
+is set, then listens on that loopback port only with the server's token, and
+prints `[gpui-mcp-app-desktop] bridge listening on 127.0.0.1:PORT` on stderr.
+It reads the window through its accessibility tree: **only elements with an
+`.id(...)` and a `.role(...)` appear in a snapshot** (gpui-component controls
+set both); give them an `.aria_label(...)` when their text is not their name.
+Details: [crates/gpui-mcp-app-desktop](crates/gpui-mcp-app-desktop/src/lib.rs).
+
+What differs:
+
+- Actions are real GPUI input events (mouse, keys, text input), so hover and
+  focus behave as with a person; targets are `@ref`, `getByRole`, `getByText`
+  or `getByLabel` (no CSS: a CSS selector is refused).
+- No JavaScript: `eval`, `navigate`, `reload`, `select`, `upload` and `emit`
+  fail with what to do instead. `invoke` calls a command the app registered
+  with `gpui_mcp_app_desktop::register`, on the main thread with the window
+  asked for; an unknown command answers the list of registered ones.
+- `logs`: the process output (stdout, stderr); there is no console.
+- `screenshot`: the whole window (physical pixels), PNG or JPEG; no element
+  target, no `full_page`.
+- A window covered by others, minimised or hidden is read and captured all the
+  same: macOS draws no frame for it (its accessibility tree would never start),
+  so the bridge draws the frames it needs itself; they show once the window
+  does.
+- A named textbox shows its name in the rendered snapshot, as for the other
+  frameworks; `wait_for` with `text` also matches what was typed.
+
 ## Flows
 
 Maestro syntax, desktop subset: `tapOn`, `doubleTapOn`, `inputText`,
@@ -289,6 +386,11 @@ go test -count=1 -v -run 'TestEndToEndElectron|TestE2E' ./internal/mcp/ ./intern
 (cd examples/tauri-fixture/src-tauri && cargo build)
 MCP_APP_DESKTOP_E2E_TAURI=1 \
 go test -count=1 -v -run 'Tauri' ./internal/mcp/ ./internal/desktop/
+
+# GPUI: a binary built with gpui-mcp-app-desktop (launched with a private
+# CODESCAPE_PROFILE, the variable codescape reads for its data)
+MCP_APP_DESKTOP_E2E_GPUI=path/to/codescape \
+go test -count=1 -v -run 'GPUI' ./internal/mcp/
 ```
 
 `MCP_APP_DESKTOP_E2E_ENV` (`KEY=VALUE,…`, `@tmp` for a fresh directory per
@@ -301,7 +403,8 @@ restarts the app (state `restarting`, automatic re-attach, restart counted;
 for Tauri also the adoption of the dev command by a new server), a second
 window driven by its own index, and the server stopping its apps when the
 host closes stdin (`cmd/mcp-app-desktop`). The fake bridge
-(`internal/tauri/tauritest`) covers the Tauri tools without a window.
+(`internal/tauri/tauritest`, `StartGPUI` for a GPUI one) covers the Tauri and
+GPUI tools without a window.
 
 Layout: `internal/engine` (renderer engine from ghostchrome, attach-only
 `Browser`), `internal/driver` (the `Window` interface and the CDP backend
@@ -309,6 +412,7 @@ Layout: `internal/engine` (renderer engine from ghostchrome, attach-only
 `internal/desktop` (sessions, detection, process tree, inspector),
 `internal/mcp` (tools), `internal/flow` (YAML flows), `cmd/mcp-app-desktop`
 (CLI), `crates/tauri-plugin-mcp-app-desktop` (the Rust plugin),
+`crates/gpui-mcp-app-desktop` (the GPUI bridge),
 `examples/tauri-fixture` (Tauri app of the end-to-end tests), `plugin/`
 (Claude Code plugin: manifest, `.mcp.json`, and the skill, also embedded in
 the binary by `plugin/skills`), `.claude-plugin/` (the marketplace),

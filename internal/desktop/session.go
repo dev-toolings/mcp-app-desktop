@@ -58,7 +58,8 @@ type LaunchSpec struct {
 	// Name overrides the display name.
 	Name string
 	// Framework is a hint for a Command launch (FrameworkElectron,
-	// FrameworkTauri, or empty: whichever answers first). Target launches
+	// FrameworkTauri, FrameworkGPUI, or empty: whichever answers first, a
+	// bridge telling Tauri from GPUI by its hello). Target launches
 	// recognise their framework themselves.
 	Framework string
 }
@@ -66,11 +67,12 @@ type LaunchSpec struct {
 // AttachSpec selects a running application.
 type AttachSpec struct {
 	// Endpoint is the remote debugging endpoint (http://127.0.0.1:PORT) of
-	// an Electron app, or the bridge port of a Tauri app (127.0.0.1:PORT).
+	// an Electron app, or the bridge port of a Tauri or GPUI app
+	// (127.0.0.1:PORT).
 	Endpoint string
 	// Inspector is the main process inspector endpoint, when known.
 	Inspector string
-	// Token authenticates to a Tauri bridge started with
+	// Token authenticates to a bridge started with
 	// MCP_APP_DESKTOP_BRIDGE_TOKEN.
 	Token string
 	Name  string
@@ -80,16 +82,28 @@ type AttachSpec struct {
 const (
 	FrameworkElectron = "electron"
 	FrameworkTauri    = "tauri"
+	// FrameworkGPUI is a GPUI app with gpui-mcp-app-desktop: the Tauri
+	// bridge protocol without webview or JavaScript (see package tauri).
+	FrameworkGPUI = tauri.FrameworkGPUI
 )
+
+// bridgeFramework is the framework of the app behind a bridge, from its hello.
+func bridgeFramework(h tauri.Hello) string {
+	if h.Framework == tauri.FrameworkGPUI {
+		return FrameworkGPUI
+	}
+	return FrameworkTauri
+}
 
 // Info is the identity of a session: what the agent reads back.
 type Info struct {
 	ID   string `json:"session_id"`
 	Name string `json:"name"`
-	// Framework is FrameworkElectron or FrameworkTauri.
+	// Framework is FrameworkElectron, FrameworkTauri or FrameworkGPUI.
 	Framework string `json:"framework"`
 	// Backend is how windows are driven: driver.BackendCDP (Electron,
-	// Tauri on Windows) or driver.BackendBridge (Tauri bridge plugin).
+	// Tauri on Windows) or driver.BackendBridge (Tauri bridge plugin, GPUI
+	// bridge).
 	Backend string `json:"backend"`
 	// Mode is "target" (electron binary started here), "command" (dev
 	// command started here) or "attach".
@@ -105,6 +119,9 @@ type Info struct {
 	Inspector string `json:"inspector_endpoint,omitempty"`
 	PID       int    `json:"pid,omitempty"`
 	Profile   string `json:"profile_dir,omitempty"`
+	// ProfileID is the identifier segment of a private profile asked for
+	// with ${MCP_APP_DESKTOP_PROFILE_ID} (see profile.go).
+	ProfileID string `json:"profile_id,omitempty"`
 	Note      string `json:"note,omitempty"`
 }
 
@@ -137,7 +154,8 @@ type Session struct {
 	bridgeCandidate string
 	proc            *ownedProc
 	ring            *Ring
-	root            string // private temp root (profile), removed on stop
+	root            string   // private temp root (profile), removed on stop
+	profile         *profile // private profile asked for through placeholders (profile.go), removed on stop
 	state           State
 	since           time.Time // when the current state began
 	generation      int
@@ -304,7 +322,7 @@ func (s *Session) Browser(ctx context.Context) (*engine.Browser, error) {
 		return nil, fmt.Errorf("session %s is stopped", s.ID)
 	}
 	if s.Backend == driver.BackendBridge {
-		return nil, fmt.Errorf("%s is a Tauri app driven through its bridge plugin (%s): it has no DevTools Protocol endpoint", s.Name, s.Endpoint)
+		return nil, fmt.Errorf("%s is a %s app driven through its bridge (%s): it has no DevTools Protocol endpoint", s.Name, s.Framework, s.Endpoint)
 	}
 	if s.browser != nil && s.browser.Alive(2*time.Second) {
 		return s.browser, nil
@@ -379,11 +397,11 @@ func (s *Session) bridgeApp(ctx context.Context) (*tauri.App, error) {
 	return nil, s.unavailableLocked()
 }
 
-// TauriApp returns the bridge connection of a Tauri session (nil, error for
-// a CDP session).
+// TauriApp returns the bridge connection of a Tauri or GPUI session (nil,
+// error for a CDP session).
 func (s *Session) TauriApp(ctx context.Context) (*tauri.App, error) {
 	if s.Backend != driver.BackendBridge {
-		return nil, fmt.Errorf("%s is not driven through the Tauri bridge", s.Name)
+		return nil, fmt.Errorf("%s is not driven through a bridge", s.Name)
 	}
 	return s.bridgeApp(ctx)
 }
@@ -925,22 +943,26 @@ func (m *Manager) Launch(ctx context.Context, spec LaunchSpec) (*Session, error)
 		return m.launchCommand(ctx, spec)
 	}
 	if spec.Target == "" {
-		return nil, &UsageError{"give target (an Electron or Tauri project, a .app or an executable) or command (a dev command)"}
+		return nil, &UsageError{"give target (an Electron, Tauri or GPUI project, a .app or an executable) or command (a dev command)"}
 	}
 	t, err := Resolve(spec.Target)
 	if err != nil {
 		return nil, err
 	}
-	if t.Framework == FrameworkTauri {
+	if t.Framework == FrameworkTauri || t.Framework == FrameworkGPUI {
 		if len(t.DevCommand) > 0 {
 			// A Tauri project runs through its dev loop: tauri dev builds
-			// the Rust side and serves the frontend.
-			spec.Command, spec.Framework = t.DevCommand, FrameworkTauri
+			// the Rust side and serves the frontend. A GPUI project through
+			// cargo run, or the command its manifest names.
+			spec.Command, spec.Framework = t.DevCommand, t.Framework
 			spec.Dir = firstNonEmpty(spec.Dir, t.Dir)
 			spec.Name = firstNonEmpty(spec.Name, t.Name)
 			return m.launchCommand(ctx, spec)
 		}
-		return m.launchTauri(ctx, spec, t)
+		return m.launchBridge(ctx, spec, t)
+	}
+	if wantsProfile(spec.Args, spec.Env) {
+		return nil, &UsageError{fmt.Sprintf("${%s} and ${%s} are for a command launch or a Tauri or GPUI target: an Electron target already gets a private --user-data-dir (isolate), shown as profile_dir", EnvProfileDir, EnvProfileID)}
 	}
 	if err := m.admit(); err != nil {
 		return nil, err
@@ -1009,13 +1031,19 @@ func (m *Manager) Launch(ctx context.Context, spec LaunchSpec) (*Session, error)
 	return m.add(s)
 }
 
-// tauriNote tells what isolation means for a Tauri app.
-const tauriNote = "Tauri app: it keeps its own data directories (isolate applies to Electron only); pass the app's own data-dir variable in env to isolate it"
+// bridgeAppNote tells what isolation means for a Tauri or GPUI app.
+func bridgeAppNote(framework string) string {
+	kind := "Tauri"
+	if framework == FrameworkGPUI {
+		kind = "GPUI"
+	}
+	return kind + " app: it keeps its own data directories (isolate applies to Electron only); name ${" + EnvProfileDir + "} in env or args (the app's own data-dir variable) for a private directory removed on stop"
+}
 
-// launchTauri starts a built Tauri app (its executable or .app). It is
-// driven through its bridge plugin, or through WebView2's DevTools Protocol
-// on Windows.
-func (m *Manager) launchTauri(ctx context.Context, spec LaunchSpec, t *Target) (*Session, error) {
+// launchBridge starts a built Tauri or GPUI app (its executable or .app),
+// driven through its bridge (or, for Tauri on Windows, through WebView2's
+// DevTools Protocol).
+func (m *Manager) launchBridge(ctx context.Context, spec LaunchSpec, t *Target) (*Session, error) {
 	if err := m.admit(); err != nil {
 		return nil, err
 	}
@@ -1027,9 +1055,19 @@ func (m *Manager) launchTauri(ctx context.Context, spec LaunchSpec, t *Target) (
 	if err != nil {
 		return nil, err
 	}
-	s := &Session{Info: Info{Name: firstNonEmpty(spec.Name, t.Name), Framework: FrameworkTauri, Mode: "target", Owned: true}, ring: NewRing(3000)}
+	s := &Session{Info: Info{Name: firstNonEmpty(spec.Name, t.Name), Framework: t.Framework, Mode: "target", Owned: true}, ring: NewRing(3000)}
 	s.offer(pp)
+	if t.Framework == FrameworkGPUI {
+		// No webview: the bridge is the only endpoint.
+		s.cdpCandidate = ""
+	}
 	args := append(append([]string{}, t.Args...), spec.Args...)
+	env := spec.Env
+	if wantsProfile(args, env) {
+		if args, env, err = s.takeProfile(m.profilesDir(), args, env); err != nil {
+			return nil, err
+		}
+	}
 	dir := spec.Dir
 	if dir == "" {
 		dir = t.Dir
@@ -1037,8 +1075,9 @@ func (m *Manager) launchTauri(ctx context.Context, spec LaunchSpec, t *Target) (
 	if dir == "" {
 		dir = filepath.Dir(t.Executable)
 	}
-	p, err := startOwned(t.Executable, args, mergeEnv(spec.Env, pp), dir, s.ring, "")
+	p, err := startOwned(t.Executable, args, mergeEnv(env, pp), dir, s.ring, "")
 	if err != nil {
+		s.dropProfile()
 		return nil, err
 	}
 	s.proc, s.PID = p, p.pid
@@ -1049,8 +1088,38 @@ func (m *Manager) launchTauri(ctx context.Context, spec LaunchSpec, t *Target) (
 	if spec.Name == "" && t.Bundle == "" && s.bridge != nil && s.bridge.Client().Hello.AppName != "" {
 		s.Name = s.bridge.Client().Hello.AppName // its productName, not the file name
 	}
-	s.Note = tauriNote
+	if s.profile == nil {
+		s.Note = bridgeAppNote(s.Framework)
+	}
 	return m.add(s)
+}
+
+// takeProfile creates the session's private profile under root and expands
+// its placeholders in argv and env (copies: the caller's stay as given).
+func (s *Session) takeProfile(root string, argv []string, env map[string]string) ([]string, map[string]string, error) {
+	p, err := newProfile(root)
+	if err != nil {
+		return nil, nil, err
+	}
+	s.profile, s.Profile, s.ProfileID = p, p.Dir, p.ID
+	outArgv := make([]string, len(argv))
+	for i, a := range argv {
+		outArgv[i] = p.expand(a)
+	}
+	outEnv := make(map[string]string, len(env))
+	for k, v := range env {
+		outEnv[k] = p.expand(v)
+	}
+	return outArgv, outEnv, nil
+}
+
+// dropProfile removes the private profile of a launch that did not start.
+func (s *Session) dropProfile() {
+	if s.profile == nil {
+		return
+	}
+	_, _ = s.profile.remove()
+	s.profile, s.Profile, s.ProfileID = nil, "", ""
 }
 
 // offer records the endpoints a launched app was given; waitReady settles
@@ -1086,19 +1155,22 @@ func (m *Manager) launchCommand(ctx context.Context, spec LaunchSpec) (*Session,
 	if framework == "" {
 		if _, _, ok := tauriRoot(firstNonEmpty(spec.Dir, ".")); ok {
 			framework = FrameworkTauri
+		} else if mentionsGPUIBridge(firstNonEmpty(spec.Dir, ".")) {
+			framework = FrameworkGPUI
 		}
 	}
 	timeout := spec.StartupTimeout
 	if timeout <= 0 {
 		timeout = defaultCommandStartup
-		if framework == FrameworkTauri {
+		if framework == FrameworkTauri || framework == FrameworkGPUI {
+			// Both compile Rust first: minutes on a cold cache.
 			timeout = defaultTauriCommandStartup
 		}
 	}
 	if err := m.admit(); err != nil {
 		return nil, err
 	}
-	pp, err := allocPorts(spec.Inspect && framework != FrameworkTauri)
+	pp, err := allocPorts(spec.Inspect && framework != FrameworkTauri && framework != FrameworkGPUI)
 	if err != nil {
 		return nil, err
 	}
@@ -1110,35 +1182,52 @@ func (m *Manager) launchCommand(ctx context.Context, spec LaunchSpec) (*Session,
 	for k, v := range spec.Env {
 		extra[k] = expandPorts(v, pp)
 	}
-	exe, err := lookPath(argv[0], spec.Dir)
-	if err != nil {
-		return nil, &UsageError{fmt.Sprintf("command %q not found: %v", argv[0], err)}
-	}
 	key := devKey(spec.Dir, spec.Command, spec.Inspect)
 	statePath := m.devStatePath(key)
+	// Before anything is created for a new launch: an app already running
+	// keeps the profile it was started with.
 	if prev, err := readDevState(statePath); err == nil {
 		if prev.stillOurs() {
 			return m.adoptCommand(ctx, prev, statePath, timeout)
 		}
+		// The command ended without stop (killed, crashed, a reboot). Its
+		// private profile goes with it once nothing of its process group
+		// remains: an app that outlived its command may still write there.
+		if p := m.recordedProfile(prev); p != nil && !groupAlive(prev.PGID) {
+			_, _ = p.remove()
+		}
 		removeDevState(statePath, prev)
 	}
-	s := &Session{Info: Info{Name: firstNonEmpty(spec.Name, filepath.Base(argv[0])+" "+strings.Join(argv[1:], " ")), Framework: framework, Mode: "command", Owned: true}, ring: NewRing(5000)}
+	s := &Session{Info: Info{Framework: framework, Mode: "command", Owned: true}, ring: NewRing(5000)}
+	if wantsProfile(argv, extra) {
+		if argv, extra, err = s.takeProfile(m.profilesDir(), argv, extra); err != nil {
+			return nil, err
+		}
+	}
+	exe, err := lookPath(argv[0], spec.Dir)
+	if err != nil {
+		s.dropProfile()
+		return nil, &UsageError{fmt.Sprintf("command %q not found: %v", argv[0], err)}
+	}
+	s.Name = firstNonEmpty(spec.Name, filepath.Base(argv[0])+" "+strings.Join(argv[1:], " "))
 	s.offer(pp)
 	// Files, not pipes: the app must survive this server, and a closed pipe
 	// would kill it on its next write.
 	stdout, stderr, err := openDevLogs(m.devDir(), key)
 	if err != nil {
+		s.dropProfile()
 		return nil, fmt.Errorf("dev command logs: %w", err)
 	}
 	p, err := startOwnedTo(exe, argv[1:], mergeEnv(extra, pp), spec.Dir, stdout, stderr, s.ring, "")
 	stdout.Close()
 	stderr.Close()
 	if err != nil {
+		s.dropProfile()
 		return nil, err
 	}
 	s.proc, s.PID = p, p.pid
 	s.tails = []*fileTail{tailFile(stdout.Name(), 0, s.ring.Writer("stdout")), tailFile(stderr.Name(), 0, s.ring.Writer("stderr"))}
-	s.dev = &devState{Name: s.Name, Dir: spec.Dir, Command: spec.Command, Inspect: spec.Inspect, PID: p.pid, PGID: p.pid, RootCmd: rootCommand(p.pid), CDPPort: pp.CDP, InspPort: pp.Inspect, BridgePort: pp.Bridge, Token: pp.Token, Started: time.Now(), StdoutLog: stdout.Name(), StderrLog: stderr.Name()}
+	s.dev = &devState{Name: s.Name, Dir: spec.Dir, Command: spec.Command, Inspect: spec.Inspect, PID: p.pid, PGID: p.pid, RootCmd: rootCommand(p.pid), CDPPort: pp.CDP, InspPort: pp.Inspect, BridgePort: pp.Bridge, Token: pp.Token, Started: time.Now(), StdoutLog: stdout.Name(), StderrLog: stderr.Name(), ProfileDir: s.Profile, ProfileID: s.ProfileID}
 	s.devPath = statePath
 	// Written before the wait (a first Tauri build takes minutes: a server
 	// that dies meanwhile must let the next one adopt the app), and again
@@ -1166,8 +1255,11 @@ func (s *Session) writeDev() {
 // commandNote explains a dev command session once its framework is known.
 func commandNote(framework string, inspect bool) string {
 	const tail = "; the session re-attaches automatically after every restart; it keeps running when this server exits, and the next launch of the same command adopts it (stop ends it)"
-	if framework == FrameworkTauri {
+	switch framework {
+	case FrameworkTauri:
 		return "Tauri dev command: driven through tauri-plugin-mcp-app-desktop, which reads $" + tauri.EnvBridgePort + " and $" + tauri.EnvBridgeToken + " from the environment" + tail
+	case FrameworkGPUI:
+		return "GPUI dev command: driven through " + tauri.GPUIBridgeCrate + " (gpui_mcp_app_desktop::init), which reads $" + tauri.EnvBridgePort + " and $" + tauri.EnvBridgeToken + " from the environment; no JavaScript: eval, navigate and reload are unavailable, invoke calls the commands the app registers" + tail
 	}
 	insp := ""
 	if inspect {
@@ -1192,6 +1284,9 @@ func (m *Manager) adoptCommand(ctx context.Context, prev *devState, statePath st
 		return open, nil
 	}
 	s := &Session{Info: Info{Name: prev.Name, Framework: prev.Framework, Mode: "command", Owned: true, PID: prev.PID}, ring: NewRing(5000), dev: prev, devPath: statePath}
+	if p := m.recordedProfile(prev); p != nil {
+		s.profile, s.Profile, s.ProfileID = p, p.Dir, p.ID
+	}
 	// The endpoints it was given; the one that answers is used (a state
 	// written before the app came up does not know which yet).
 	s.offer(ports{CDP: prev.CDPPort, Inspect: prev.InspPort, Bridge: prev.BridgePort, Token: prev.Token})
@@ -1247,10 +1342,14 @@ func (s *Session) waitReady(ctx context.Context, timeout time.Duration) error {
 			}
 		}
 		if s.bridgeCandidate != "" && tauri.Probe(ctx, s.bridgeCandidate) {
-			s.Framework = FrameworkTauri
-			// On Windows the same app also opens WebView2's DevTools port,
-			// which drives it best: give it a moment to come up.
-			if runtime.GOOS == "windows" && s.cdpCandidate != "" {
+			// Tauri until its hello says GPUI (connectBridge).
+			if s.Framework != FrameworkGPUI {
+				s.Framework = FrameworkTauri
+			}
+			// On Windows the same Tauri app also opens WebView2's DevTools
+			// port, which drives it best: give it a moment to come up. A
+			// GPUI app opens none.
+			if runtime.GOOS == "windows" && s.cdpCandidate != "" && s.Framework != FrameworkGPUI {
 				if cdpGrace.IsZero() {
 					cdpGrace = time.Now().Add(10 * time.Second)
 				}
@@ -1321,8 +1420,10 @@ func (s *Session) notReachedError(timeout time.Duration) error {
 		return fmt.Errorf("%s did not open its bridge %s within %s: the app must include tauri-plugin-mcp-app-desktop (registered in debug builds) and inherit $%s / $%s from its environment; a first build of a Tauri dev command can take minutes (startup_timeout_ms)\noutput:\n%s", s.Name, s.bridgeCandidate, timeout, tauri.EnvBridgePort, tauri.EnvBridgeToken, tail)
 	case s.Framework == FrameworkTauri:
 		return fmt.Errorf("%s opened neither WebView2's DevTools port %s nor its bridge %s within %s (WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS is set for it)\noutput:\n%s", s.Name, s.cdpCandidate, s.bridgeCandidate, timeout, tail)
+	case s.Framework == FrameworkGPUI:
+		return fmt.Errorf("%s did not open its bridge %s within %s: %s (it prints \"[%s] bridge listening on …\" when it does); a first cargo build can take minutes (startup_timeout_ms)\noutput:\n%s", s.Name, s.bridgeCandidate, timeout, gpuiBridgeHint, tauri.GPUIBridgeCrate, tail)
 	case s.Framework == "" && s.bridgeCandidate != "":
-		return fmt.Errorf("%s answered neither on its debugging port %s (Electron: pass --remote-debugging-port=$%s to electron) nor on its bridge %s (Tauri: add tauri-plugin-mcp-app-desktop) within %s\noutput:\n%s", s.Name, s.cdpCandidate, EnvCDPPort, s.bridgeCandidate, timeout, tail)
+		return fmt.Errorf("%s answered neither on its debugging port %s (Electron: pass --remote-debugging-port=$%s to electron) nor on its bridge %s (Tauri: add tauri-plugin-mcp-app-desktop; GPUI: call gpui_mcp_app_desktop::init) within %s\noutput:\n%s", s.Name, s.cdpCandidate, EnvCDPPort, s.bridgeCandidate, timeout, tail)
 	}
 	return fmt.Errorf("%s did not open its debugging port %s within %s\noutput:\n%s", s.Name, s.cdpCandidate, timeout, tail)
 }
@@ -1348,6 +1449,13 @@ func (s *Session) connectBridge(ctx context.Context, timeout time.Duration) erro
 	}
 	s.bridge = tauri.NewApp(c, s.dialogPolicy)
 	s.generation = 1
+	// The hello tells Tauri from GPUI, whatever the launch guessed.
+	s.Framework = bridgeFramework(c.Hello)
+	if s.Framework == FrameworkGPUI {
+		// The inspector port offered to a dev command of unknown framework
+		// is for Electron: a GPUI app has no JavaScript process to open it.
+		s.Inspector = ""
+	}
 	if s.Mode == "command" && c.Hello.AppName != "" {
 		s.Name = c.Hello.AppName
 	}
@@ -1423,7 +1531,7 @@ func (m *Manager) sessionAtLocked(endpoint string) *Session {
 // needed.
 func (m *Manager) AttachOrReuse(ctx context.Context, spec AttachSpec) (*Session, bool, error) {
 	if strings.TrimSpace(spec.Endpoint) == "" {
-		return nil, false, &UsageError{"give endpoint: http://127.0.0.1:PORT of an Electron app started with --remote-debugging-port, or the bridge port of a Tauri app started with " + tauri.EnvBridgePort}
+		return nil, false, &UsageError{"give endpoint: http://127.0.0.1:PORT of an Electron app started with --remote-debugging-port, or the bridge port of a Tauri or GPUI app started with " + tauri.EnvBridgePort}
 	}
 	endpoint := normalizeEndpoint(spec.Endpoint)
 	m.mu.Lock()
@@ -1507,13 +1615,13 @@ func (m *Manager) attachNew(ctx context.Context, endpoint string, spec AttachSpe
 	return s, nil
 }
 
-// attachBridge attaches to a Tauri app whose bridge plugin listens at
+// attachBridge attaches to a Tauri or GPUI app whose bridge listens at
 // endpoint (started by hand with MCP_APP_DESKTOP_BRIDGE_PORT).
 func (m *Manager) attachBridge(ctx context.Context, endpoint string, spec AttachSpec) (*Session, error) {
 	_, rest, _ := strings.Cut(endpoint, "://")
 	addr, _, _ := strings.Cut(rest, "/")
 	if !tauri.Probe(ctx, addr) {
-		return nil, fmt.Errorf("nothing answers at %s: neither a remote debugging endpoint (Electron started with --remote-debugging-port) nor a Tauri bridge (an app with tauri-plugin-mcp-app-desktop started with %s)", endpoint, tauri.EnvBridgePort)
+		return nil, fmt.Errorf("nothing answers at %s: neither a remote debugging endpoint (Electron started with --remote-debugging-port) nor a bridge (a Tauri app with tauri-plugin-mcp-app-desktop, or a GPUI app calling gpui_mcp_app_desktop::init, started with %s)", endpoint, tauri.EnvBridgePort)
 	}
 	c, err := tauri.Dial(ctx, addr, spec.Token)
 	if err != nil {
@@ -1521,9 +1629,9 @@ func (m *Manager) attachBridge(ctx context.Context, endpoint string, spec Attach
 		if spec.Token == "" {
 			hint = " (if the app was started with " + tauri.EnvBridgeToken + ", pass its value as token)"
 		}
-		return nil, fmt.Errorf("a Tauri bridge listens at %s but the connection failed: %w%s", addr, err, hint)
+		return nil, fmt.Errorf("a bridge listens at %s but the connection failed: %w%s", addr, err, hint)
 	}
-	s := &Session{Info: Info{Name: firstNonEmpty(spec.Name, c.Hello.AppName), Framework: FrameworkTauri, Backend: driver.BackendBridge, Mode: "attach", Endpoint: addr, PID: c.Hello.PID}, generation: 1, ring: NewRing(200), token: spec.Token}
+	s := &Session{Info: Info{Name: firstNonEmpty(spec.Name, c.Hello.AppName), Framework: bridgeFramework(c.Hello), Backend: driver.BackendBridge, Mode: "attach", Endpoint: addr, PID: c.Hello.PID}, generation: 1, ring: NewRing(200), token: spec.Token}
 	s.dialogs = &engine.DialogAutoPolicy{Accept: true}
 	s.bridge = tauri.NewApp(c, s.dialogPolicy)
 	// The plugin listens before the app opens its first window: give it a
@@ -1567,8 +1675,11 @@ type StopReport struct {
 	ArtifactsDir  string `json:"artifacts_dir,omitempty"`
 	ArtifactsKept bool   `json:"artifacts_kept,omitempty"`
 	// Survivors lists pids that could not be terminated.
-	Survivors []int  `json:"survivors,omitempty"`
-	Note      string `json:"note,omitempty"`
+	Survivors []int `json:"survivors,omitempty"`
+	// ProfileRemoved lists what was deleted of a private profile: its
+	// directory and what the app left under its private identifier.
+	ProfileRemoved []string `json:"profile_removed,omitempty"`
+	Note           string   `json:"note,omitempty"`
 }
 
 // Stop closes a session; an owned application is terminated together with
@@ -1667,13 +1778,25 @@ func (s *Session) stop(keepArtifacts bool) *StopReport {
 	if s.root != "" {
 		var rmErr error
 		for i := 0; i < 5; i++ {
-			if rmErr = os.RemoveAll(s.root); rmErr == nil {
+			if rmErr = removeTree(s.root); rmErr == nil {
 				break
 			}
 			time.Sleep(100 * time.Millisecond)
 		}
 		if rmErr != nil {
 			rep.Note = "private profile not removed: " + rmErr.Error()
+		}
+	}
+	if s.profile != nil {
+		if !rep.Terminated {
+			// A process still running may write there: leave it whole.
+			rep.Note = fmt.Sprintf("private profile kept (%s, identifier segment %s): the application did not stop", s.profile.Dir, s.profile.ID)
+		} else {
+			removed, err := s.profile.remove()
+			rep.ProfileRemoved = removed
+			if err != nil {
+				rep.Note = "private profile not removed: " + err.Error()
+			}
 		}
 	}
 	return rep

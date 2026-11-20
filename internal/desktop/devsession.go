@@ -42,6 +42,10 @@ type devState struct {
 	Started    time.Time `json:"started"`
 	StdoutLog  string    `json:"stdout_log"`
 	StderrLog  string    `json:"stderr_log"`
+	// The private profile the app was started with (profile.go): the
+	// server that adopts it removes it on stop.
+	ProfileDir string `json:"profile_dir,omitempty"`
+	ProfileID  string `json:"profile_id,omitempty"`
 }
 
 // devKey identifies a dev command by its directory and unexpanded argv.

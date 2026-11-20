@@ -1,14 +1,14 @@
 // Package mcp exposes mcp-app-desktop as a Model Context Protocol server over
-// stdio: tools to launch, observe, drive and debug an Electron or a Tauri
-// application from Claude Code, Codex or any other MCP host.
+// stdio: tools to launch, observe, drive and debug an Electron, a Tauri or a
+// GPUI application from Claude Code, Codex or any other MCP host.
 //
 // One long-lived session per application keeps the connection (CDP, or the
 // Tauri bridge), the per-window ref snapshots and the logs across tool
 // calls, so a ref read by snapshot stays valid for the next click.
 //
 // The tool list is dynamic: tools that only make sense for one framework
-// (eval_main for Electron, invoke and emit for Tauri) are listed while a
-// session of that framework is open, and the host is told when that changes
+// (eval_main for Electron, invoke and emit for Tauri, invoke for GPUI) are
+// listed while a session of that framework is open, and the host is told when that changes
 // (notifications/tools/list_changed).
 package mcp
 
@@ -72,11 +72,12 @@ func New(opts Options) (*Server, error) {
 func (s *Server) Manager() *desktop.Manager { return s.mgr }
 
 // Instructions is what the MCP host shows the model about this server.
-const Instructions = `mcp-app-desktop drives desktop applications built with Electron or Tauri, for development and debugging. The framework is recognised by itself.
+const Instructions = `mcp-app-desktop drives desktop applications built with Electron, Tauri or GPUI, for development and debugging. The framework is recognised by itself.
 Loop: launch (project dir, .app, executable, or a dev command) or attach → snapshot (refs @N) → click/type/press/… by ref, CSS selector or getByRole/getByText/getByLabel → wait_for → logs on errors → screenshot when layout matters → stop.
 Actions return a diff of the interactive elements; re-snapshot after a navigation or a big UI change (refs are per window).
-eval runs JavaScript in a window. Framework tools appear while a session of their framework is open: eval_main (Electron main process: app, BrowserWindow, ipcMain, dialog…), invoke and emit (Tauri commands and events; logs source ipc shows every command the page called).
+eval runs JavaScript in a window. Framework tools appear while a session of their framework is open: eval_main (Electron main process: app, BrowserWindow, ipcMain, dialog…), invoke and emit (Tauri commands and events; logs source ipc shows every command the page called), invoke for GPUI (the commands the app registers).
 Tauri on macOS and Linux is driven through tauri-plugin-mcp-app-desktop, which the app registers in debug builds; on Windows through WebView2's DevTools port.
+GPUI is driven through gpui-mcp-app-desktop: the app calls gpui_mcp_app_desktop::init(cx) in debug builds (cargo run --features automation); only elements with .id() and .role() (and .aria_label()) appear in snapshots; locate them by @ref or getByRole/getByText/getByLabel (no CSS). No JavaScript: eval, navigate and reload are unavailable; invoke calls the commands it registers with gpui_mcp_app_desktop::register.
 A dev command (bun run dev, tauri dev) that restarts the app on recompilation is followed automatically, by a launched or an attached session: tools answer "restarting" until the new instance is reachable; never attach again (attach to an endpoint already driven returns its session).
 When a call fails, hangs, times out or is interrupted, read trace (problems: true; with_stacks: true for a call reported stuck): every call's arguments, duration and outcome, host cancellations, and the server's goroutines when a call ran past 20 s. Use it to find the cause and fix mcp-app-desktop itself.`
 
@@ -85,8 +86,18 @@ type toolDef struct {
 	tool    mcpgo.Tool
 	handler func(*Server, context.Context, mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error)
 	// framework is set for a tool listed only while a session of that
-	// framework is open.
+	// framework is open; several frameworks are separated by "|".
 	framework string
+}
+
+// listedFor tells whether a framework tool belongs with the frameworks open.
+func (d toolDef) listedFor(open map[string]bool) bool {
+	for _, f := range strings.Split(d.framework, "|") {
+		if open[f] {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) serverTool(def toolDef) mcpsrv.ServerTool {
@@ -137,7 +148,7 @@ func (s *Server) syncTools() {
 		if def.framework == "" {
 			continue
 		}
-		want, has := open[def.framework], s.active[def.tool.Name]
+		want, has := def.listedFor(open), s.active[def.tool.Name]
 		switch {
 		case want && !has:
 			add = append(add, s.serverTool(def))

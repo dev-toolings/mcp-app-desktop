@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dev-toolings/mcp-app-desktop/internal/driver"
 	"github.com/dev-toolings/mcp-app-desktop/internal/engine"
 	"github.com/dev-toolings/mcp-app-desktop/internal/tauri"
 	"github.com/dev-toolings/mcp-app-desktop/internal/tauri/tauritest"
@@ -139,6 +140,42 @@ func TestAppInstallsTheAgentAndSnapshots(t *testing.T) {
 	}
 	if url, title, err := w.Info(ctx(t)); err != nil || url != "tauri://localhost/settings" || title != "Fake" {
 		t.Fatalf("info: %q %q %v", url, title, err)
+	}
+}
+
+// A typed value and its Enter must not share one task: a page that renders
+// the value after the input event would submit what was there before.
+func TestTypeSubmitPressesEnterInItsOwnCall(t *testing.T) {
+	b := tauritest.Start(t, "")
+	c, err := tauri.Dial(ctx(t), b.Addr(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	w, err := tauri.NewApp(c, nil).Window(ctx(t), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Type(ctx(t), "", "bonjour", driver.TypeOptions{Submit: true}); err != nil {
+		t.Fatal(err)
+	}
+	var ops []string
+	for _, script := range b.Scripts {
+		for _, op := range []string{`A.run("type",`, `A.run("press",`} {
+			if i := strings.Index(script, op); i >= 0 {
+				ops = append(ops, script[i:i+strings.Index(script[i:], "));")])
+			}
+		}
+	}
+	// The first type may be sent twice: once to find the agent missing, once after installing it.
+	n := len(ops)
+	if n < 2 || !strings.HasPrefix(ops[n-2], `A.run("type",`) || !strings.Contains(ops[n-2], `"submit":false`) || !strings.Contains(ops[n-1], `"key":"Enter"`) {
+		t.Fatalf("expected type without submit, then a press of Enter: %q", ops)
+	}
+	for _, op := range ops[:n-1] {
+		if strings.Contains(op, `"submit":true`) || strings.HasPrefix(op, `A.run("press",`) {
+			t.Fatalf("Enter sent with the typed text: %q", ops)
+		}
 	}
 }
 

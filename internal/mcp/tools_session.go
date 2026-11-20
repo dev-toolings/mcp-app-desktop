@@ -18,38 +18,39 @@ func sessionProp() mcpgo.PropertyOption {
 func (s *Server) sessionTools() []toolDef {
 	return []toolDef{
 		{mcpgo.NewTool("launch",
-			mcpgo.WithDescription("Start an Electron or Tauri application and attach to it; the framework is recognised from the target. Electron target (a project dir with node_modules/electron run as `electron .`, a built .app, an executable): it gets --remote-debugging-port, --inspect (main process) and a private --user-data-dir. Tauri target: a project dir (src-tauri/tauri.conf.json) runs through its dev loop (tauri dev: the project's \"tauri\" script, its CLI, or cargo tauri); a built .app or executable runs directly. A Tauri app must register tauri-plugin-mcp-app-desktop (debug builds) on macOS and Linux; on Windows WebView2's DevTools port is used. command: a development command instead (e.g. [\"bun\",\"run\",\"dev\"]): it receives $MCP_APP_DESKTOP_CDP_PORT and $MCP_APP_DESKTOP_INSPECT_PORT (an Electron script passes them to electron as --remote-debugging-port / --inspect) and $MCP_APP_DESKTOP_BRIDGE_PORT / $MCP_APP_DESKTOP_BRIDGE_TOKEN (read by the Tauri plugin); whichever answers first tells the framework, and the session re-attaches after every restart the dev loop does. Returns the session and the first window's snapshot."),
-			mcpgo.WithString("target", mcpgo.Description("Electron or Tauri project dir, .app bundle or executable path.")),
-			mcpgo.WithArray("command", mcpgo.Description("Development command argv (no shell). ${MCP_APP_DESKTOP_CDP_PORT}, ${MCP_APP_DESKTOP_INSPECT_PORT} and ${MCP_APP_DESKTOP_BRIDGE_PORT} are expanded in argv and env (the former MCP_ELECTRON_* names too)."), mcpgo.WithStringItems()),
-			mcpgo.WithString("framework", mcpgo.Enum("auto", "electron", "tauri"), mcpgo.Description("For command: the framework it starts (auto: whichever endpoint answers; a cwd with src-tauri means Tauri and a longer startup timeout for its first build)."), mcpgo.DefaultString("auto")),
+			mcpgo.WithDescription("Start an Electron, Tauri or GPUI application and attach to it; the framework is recognised from the target. Electron target (a project dir with node_modules/electron run as `electron .`, a built .app, an executable): it gets --remote-debugging-port, --inspect (main process) and a private --user-data-dir. Tauri target: a project dir (src-tauri/tauri.conf.json) runs through its dev loop (tauri dev: the project's \"tauri\" script, its CLI, or cargo tauri); a built .app or executable runs directly. A Tauri app must register tauri-plugin-mcp-app-desktop (debug builds) on macOS and Linux; on Windows WebView2's DevTools port is used. GPUI target: a Cargo project depending on gpui-mcp-app-desktop runs through the command its [package.metadata.mcp-app-desktop] dev-command names (e.g. [\"make\",\"run\"]), else cargo run (--features automation when the bridge is an optional dependency that feature turns on); a built .app or executable containing the bridge runs directly. The app calls gpui_mcp_app_desktop::init(cx) in debug builds; elements need .id() and .role() (and .aria_label()) to appear in snapshots; it has no JavaScript (no eval, navigate, reload: invoke calls the commands it registers). command: a development command instead (e.g. [\"bun\",\"run\",\"dev\"]): it receives $MCP_APP_DESKTOP_CDP_PORT and $MCP_APP_DESKTOP_INSPECT_PORT (an Electron script passes them to electron as --remote-debugging-port / --inspect) and $MCP_APP_DESKTOP_BRIDGE_PORT / $MCP_APP_DESKTOP_BRIDGE_TOKEN (read by the Tauri plugin and the GPUI bridge, whose hello tells them apart); whichever answers first tells the framework, and the session re-attaches after every restart the dev loop does. Returns the session and the first window's snapshot."),
+			mcpgo.WithString("target", mcpgo.Description("Electron, Tauri or GPUI project dir, .app bundle or executable path.")),
+			mcpgo.WithArray("command", mcpgo.Description("Development command argv (no shell). ${MCP_APP_DESKTOP_CDP_PORT}, ${MCP_APP_DESKTOP_INSPECT_PORT} and ${MCP_APP_DESKTOP_BRIDGE_PORT} are expanded in argv and env (the former MCP_ELECTRON_* names too). So are ${MCP_APP_DESKTOP_PROFILE_DIR} and ${MCP_APP_DESKTOP_PROFILE_ID}: naming either gives this launch a private profile (see isolate)."), mcpgo.WithStringItems()),
+			mcpgo.WithString("framework", mcpgo.Enum("auto", "electron", "tauri", "gpui"), mcpgo.Description("For command: the framework it starts (auto: whichever endpoint answers; a cwd with src-tauri, or a Cargo.toml with gpui-mcp-app-desktop, means Tauri or GPUI and a longer startup timeout for the first Rust build)."), mcpgo.DefaultString("auto")),
 			mcpgo.WithArray("args", mcpgo.Description("Extra application arguments (target launches)."), mcpgo.WithStringItems()),
 			mcpgo.WithObject("env", mcpgo.Description("Extra environment variables, e.g. an app-specific test data dir."), mcpgo.AdditionalProperties(map[string]any{"type": "string"})),
 			mcpgo.WithString("cwd", mcpgo.Description("Working directory (default: the project or target dir).")),
-			mcpgo.WithBoolean("isolate", mcpgo.Description("Electron: private user-data-dir for a target launch (default true). A Tauri app keeps its own data directories. The app's own data dir env vars still need passing through env."), mcpgo.DefaultBool(true)),
+			mcpgo.WithBoolean("isolate", mcpgo.Description("Electron: private user-data-dir for a target launch (default true). A Tauri or GPUI app and a dev command keep their own data directories: to isolate one, name ${MCP_APP_DESKTOP_PROFILE_DIR} (a private directory, for the app's own data-dir variable in env) and/or ${MCP_APP_DESKTOP_PROFILE_ID} (a unique identifier segment, e.g. tauri dev --config {\"identifier\":\"com.example.app.${MCP_APP_DESKTOP_PROFILE_ID}\"}) in command, args or env. stop then deletes that directory and what the app left under an identifier ending with that segment; nothing else is touched."), mcpgo.DefaultBool(true)),
 			mcpgo.WithBoolean("inspect", mcpgo.Description("Electron: open the main process Node inspector for eval_main (default true)."), mcpgo.DefaultBool(true)),
-			mcpgo.WithNumber("startup_timeout_ms", mcpgo.Description("Wait for the app to answer (default 60000 for a target, 180000 for a command, 900000 for a Tauri dev command, whose first build compiles the Rust side).")),
+			mcpgo.WithNumber("startup_timeout_ms", mcpgo.Description("Wait for the app to answer (default 60000 for a target, 180000 for a command, 900000 for a Tauri or GPUI dev command, whose first build compiles the Rust side).")),
 			mcpgo.WithString("name", mcpgo.Description("Display name for the session.")),
 			mcpgo.WithTitleAnnotation("Launch application"), mcpgo.WithDestructiveHintAnnotation(true), mcpgo.WithOpenWorldHintAnnotation(false),
 		), (*Server).handleLaunch, ""},
 		{mcpgo.NewTool("attach",
-			mcpgo.WithDescription("Attach to an app already running: an Electron app started with --remote-debugging-port (endpoint http://127.0.0.1:PORT or just the port; optional inspector_endpoint: its main process --inspect endpoint, for eval_main), or a Tauri app with tauri-plugin-mcp-app-desktop started with MCP_APP_DESKTOP_BRIDGE_PORT (endpoint: that port; token: its MCP_APP_DESKTOP_BRIDGE_TOKEN when it has one). The kind is recognised from what answers. stop detaches without closing the app."),
-			mcpgo.WithString("endpoint", mcpgo.Required(), mcpgo.Description("Remote debugging endpoint (http://127.0.0.1:9222 or 9222) or Tauri bridge port (127.0.0.1:9333 or 9333).")),
+			mcpgo.WithDescription("Attach to an app already running: an Electron app started with --remote-debugging-port (endpoint http://127.0.0.1:PORT or just the port; optional inspector_endpoint: its main process --inspect endpoint, for eval_main), or a Tauri app with tauri-plugin-mcp-app-desktop / a GPUI app calling gpui_mcp_app_desktop::init, started with MCP_APP_DESKTOP_BRIDGE_PORT (endpoint: that port; token: its MCP_APP_DESKTOP_BRIDGE_TOKEN when it has one; or bridge_file: the file where its dev script wrote both, so the token is never read into the conversation). The kind is recognised from what answers. stop detaches without closing the app."),
+			mcpgo.WithString("endpoint", mcpgo.Description("Remote debugging endpoint (http://127.0.0.1:9222 or 9222) or Tauri/GPUI bridge port (127.0.0.1:9333 or 9333). Required unless bridge_file is given.")),
+			mcpgo.WithString("bridge_file", mcpgo.Description("Tauri or GPUI: path of the JSON file {\"endpoint\": \"127.0.0.1:PORT\", \"token\": \"…\"} written (mode 0600) by the app's dev script when it opens the bridge itself. Give it instead of endpoint and token: this server reads the token, you never do. Do not read the file yourself.")),
 			mcpgo.WithString("inspector_endpoint", mcpgo.Description("Electron: main process Node inspector endpoint, e.g. http://127.0.0.1:9229.")),
-			mcpgo.WithString("token", mcpgo.Description("Tauri: the bridge token the app was started with (MCP_APP_DESKTOP_BRIDGE_TOKEN), if any.")),
+			mcpgo.WithString("token", mcpgo.Description("Tauri or GPUI: the bridge token the app was started with (MCP_APP_DESKTOP_BRIDGE_TOKEN), if any.")),
 			mcpgo.WithString("name", mcpgo.Description("Display name for the session.")),
 			mcpgo.WithTitleAnnotation("Attach to a running application"), mcpgo.WithOpenWorldHintAnnotation(false),
 		), (*Server).handleAttach, ""},
 		{mcpgo.NewTool("status",
-			mcpgo.WithDescription("Sessions, their framework (electron, tauri) and backend (cdp, bridge), state (running, restarting, exited), restarts seen, endpoints, resources, and the windows of the running ones. Call it when a tool answers that the app is restarting or unreachable."),
+			mcpgo.WithDescription("Sessions, their framework (electron, tauri, gpui) and backend (cdp, bridge), state (running, restarting, exited), restarts seen, endpoints, resources, and the windows of the running ones. Call it when a tool answers that the app is restarting or unreachable."),
 			mcpgo.WithTitleAnnotation("Session status"), mcpgo.WithReadOnlyHintAnnotation(true), mcpgo.WithOpenWorldHintAnnotation(false),
 		), (*Server).handleStatus, ""},
 		{mcpgo.NewTool("windows",
-			mcpgo.WithDescription("List the application's windows (Electron: BrowserWindow, WebContentsView, <webview>; Tauri: webview windows, with their label) with their index, title and URL. Pass window: <index> to the other tools to target one; 0 is the first window seen."),
+			mcpgo.WithDescription("List the application's windows (Electron: BrowserWindow, WebContentsView, <webview>; Tauri: webview windows, with their label; GPUI: windows, labelled by their GPUI id) with their index, title and URL. Pass window: <index> to the other tools to target one; 0 is the first window seen."),
 			mcpgo.WithString("session", sessionProp()),
 			mcpgo.WithTitleAnnotation("List windows"), mcpgo.WithReadOnlyHintAnnotation(true), mcpgo.WithOpenWorldHintAnnotation(false),
 		), (*Server).handleWindows, ""},
 		{mcpgo.NewTool("logs",
-			mcpgo.WithDescription("Console messages and uncaught exceptions of every window, the process stdout/stderr, and per framework: Electron's failed network requests and main process console (via its inspector); Tauri's IPC calls (every command the page invoked, its duration and outcome: source ipc) and the JavaScript dialogs answered. Oldest first. Default: the last 100 entries; errors: true keeps only errors, warnings, exceptions and stderr."),
+			mcpgo.WithDescription("Console messages and uncaught exceptions of every window, the process stdout/stderr, and per framework: Electron's failed network requests and main process console (via its inspector); Tauri's IPC calls (every command the page invoked, its duration and outcome: source ipc) and the JavaScript dialogs answered. A GPUI app has no console: its logs are its process output. Oldest first. Default: the last 100 entries; errors: true keeps only errors, warnings, exceptions and stderr."),
 			mcpgo.WithString("session", sessionProp()),
 			mcpgo.WithNumber("last", mcpgo.Description("Number of entries to return (default 100)."), mcpgo.DefaultNumber(100)),
 			mcpgo.WithBoolean("errors", mcpgo.Description("Only errors, warnings, exceptions and stderr."), mcpgo.DefaultBool(false)),
@@ -135,10 +136,10 @@ func (s *Server) handleLaunch(ctx context.Context, req mcpgo.CallToolRequest) (*
 	spec.Name = mcpgo.ParseString(req, "name", "")
 	switch fw := strings.ToLower(mcpgo.ParseString(req, "framework", "auto")); fw {
 	case "", "auto":
-	case desktop.FrameworkElectron, desktop.FrameworkTauri:
+	case desktop.FrameworkElectron, desktop.FrameworkTauri, desktop.FrameworkGPUI:
 		spec.Framework = fw
 	default:
-		return errorf("framework must be auto, electron or tauri")
+		return errorf("framework must be auto, electron, tauri or gpui")
 	}
 	sess, err := s.mgr.Launch(ctx, spec)
 	if err != nil {
@@ -148,12 +149,25 @@ func (s *Server) handleLaunch(ctx context.Context, req mcpgo.CallToolRequest) (*
 }
 
 func (s *Server) handleAttach(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
-	sess, reused, err := s.mgr.AttachOrReuse(ctx, desktop.AttachSpec{
+	spec := desktop.AttachSpec{
 		Endpoint:  mcpgo.ParseString(req, "endpoint", ""),
 		Inspector: mcpgo.ParseString(req, "inspector_endpoint", ""),
 		Token:     mcpgo.ParseString(req, "token", ""),
 		Name:      mcpgo.ParseString(req, "name", ""),
-	})
+	}
+	if file := mcpgo.ParseString(req, "bridge_file", ""); file != "" {
+		if spec.Endpoint != "" || spec.Token != "" {
+			return errorf("give bridge_file alone, or endpoint (and token): the file already holds both")
+		}
+		var err error
+		if spec.Endpoint, spec.Token, err = desktop.ReadBridgeFile(file); err != nil {
+			return errResult(err)
+		}
+	}
+	if spec.Endpoint == "" {
+		return errorf("give endpoint (a remote debugging endpoint, or a Tauri or GPUI bridge port) or bridge_file (a dev script's bridge file)")
+	}
+	sess, reused, err := s.mgr.AttachOrReuse(ctx, spec)
 	if err != nil {
 		return errResult(err)
 	}
@@ -178,6 +192,9 @@ func (s *Server) sessionResult(ctx context.Context, sess *desktop.Session, verb 
 	sb.WriteString(")")
 	if st.Profile != "" {
 		fmt.Fprintf(&sb, "\nprivate profile: %s", st.Profile)
+		if st.ProfileID != "" {
+			fmt.Fprintf(&sb, " (identifier segment %s), removed by stop", st.ProfileID)
+		}
 	}
 	if st.Note != "" {
 		fmt.Fprintf(&sb, "\nnote: %s", st.Note)

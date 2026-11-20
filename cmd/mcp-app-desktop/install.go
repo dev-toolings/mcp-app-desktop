@@ -238,7 +238,7 @@ func (in *installer) installFrom(exe, destDir string, withCodex bool) error {
 		return errors.New(strings.Join(failures, "; "))
 	}
 	if !in.dryRun {
-		in.say("\n%s registered as %q. Restart the agent, then ask it to launch an Electron or Tauri app.", serverName, exe)
+		in.say("\n%s registered as %q. Restart the agent, then ask it to launch an Electron, Tauri or GPUI app.", serverName, exe)
 	}
 	return nil
 }

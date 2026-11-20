@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -23,14 +24,14 @@ func (s *Server) frameworkTools() []toolDef {
 			mcpgo.WithTitleAnnotation("Evaluate in main process"), mcpgo.WithOpenWorldHintAnnotation(false),
 		), (*Server).handleEvalMain, desktop.FrameworkElectron},
 		{mcpgo.NewTool("invoke",
-			mcpgo.WithDescription("Tauri only. Call a Tauri command (a #[tauri::command] of the app, or a plugin command such as plugin:dialog|open) from a window, exactly as the page does with invoke(), and return its result (strings as is, other values as JSON); a rejected command is reported as an error. The capabilities of that window apply. Every command the page itself calls is in logs (source ipc)."),
-			mcpgo.WithString("command", mcpgo.Required(), mcpgo.Description("Command name, e.g. greet or plugin:fs|read_text_file.")),
-			mcpgo.WithObject("args", mcpgo.Description("Command arguments as a JSON object (camelCase keys, as the JavaScript side passes them).")),
+			mcpgo.WithDescription("Tauri and GPUI. Tauri: call a Tauri command (a #[tauri::command] of the app, or a plugin command such as plugin:dialog|open) from a window, exactly as the page does with invoke(), and return its result (strings as is, other values as JSON); a rejected command is reported as an error. The capabilities of that window apply. Every command the page itself calls is in logs (source ipc). GPUI (no JavaScript, so this replaces eval): call a command the app registered with gpui_mcp_app_desktop::register(cx, name, |args, window, cx| ...), run on the main thread with that window; an unknown command answers the list of registered ones."),
+			mcpgo.WithString("command", mcpgo.Required(), mcpgo.Description("Command name, e.g. greet or plugin:fs|read_text_file (Tauri), or a name the GPUI app registered.")),
+			mcpgo.WithObject("args", mcpgo.Description("Command arguments as a JSON object (Tauri: camelCase keys, as the JavaScript side passes them; GPUI: whatever the command reads).")),
 			mcpgo.WithString("session", sessionProp()),
 			mcpgo.WithNumber("window", windowProp()),
 			mcpgo.WithNumber("timeout_ms", mcpgo.Description("How long to wait for the command (default 8000, max 120000)."), mcpgo.DefaultNumber(8000)),
-			mcpgo.WithTitleAnnotation("Invoke Tauri command"), mcpgo.WithOpenWorldHintAnnotation(false),
-		), (*Server).handleInvoke, desktop.FrameworkTauri},
+			mcpgo.WithTitleAnnotation("Invoke app command"), mcpgo.WithOpenWorldHintAnnotation(false),
+		), (*Server).handleInvoke, desktop.FrameworkTauri + "|" + desktop.FrameworkGPUI},
 		{mcpgo.NewTool("emit",
 			mcpgo.WithDescription("Tauri only. Emit a Tauri event to every listener (Rust and windows), as the page does with emit() from @tauri-apps/api/event."),
 			mcpgo.WithString("event", mcpgo.Required(), mcpgo.Description("Event name.")),
@@ -53,7 +54,7 @@ func (s *Server) handleEvalMain(ctx context.Context, req mcpgo.CallToolRequest) 
 		return errResult(err)
 	}
 	if sess.Framework != desktop.FrameworkElectron {
-		return errorf("eval_main needs an Electron session: %s is a %s app, which has no JavaScript main process (use eval in a window, or invoke for its commands)", sess.Name, sess.Framework)
+		return errorf("eval_main needs an Electron session: %s is a %s app, which has no JavaScript main process (use eval in a window, or invoke for its commands; a GPUI app has no JavaScript at all)", sess.Name, sess.Framework)
 	}
 	if _, err := sess.App(ctx); err != nil {
 		return errResult(err)
@@ -79,10 +80,44 @@ func (s *Server) tauriWindow(ctx context.Context, req mcpgo.CallToolRequest, too
 	if err != nil {
 		return errResult(err)
 	}
-	if sess.Framework != desktop.FrameworkTauri {
+	switch sess.Framework {
+	case desktop.FrameworkTauri:
+	case desktop.FrameworkGPUI:
+		return errorf("%s needs a Tauri session: %s is a GPUI app, which has no JavaScript and no event bus reachable from outside; call a command it registers with invoke (gpui_mcp_app_desktop::register)", tool, sess.Name)
+	default:
 		return errorf("%s needs a Tauri session: %s is a %s app (use eval, or eval_main for Electron's main process)", tool, sess.Name, sess.Framework)
 	}
 	return s.withPage(ctx, req, fn)
+}
+
+// gpuiInvoke calls a command a GPUI app registered, in the window asked for.
+func (s *Server) gpuiInvoke(ctx context.Context, req mcpgo.CallToolRequest, command string, args map[string]any, timeout time.Duration) (*mcpgo.CallToolResult, error) {
+	return s.withPage(ctx, req, func(sess *desktop.Session, w driver.Window) (*mcpgo.CallToolResult, error) {
+		tw, ok := w.(*tauri.Window)
+		if !ok {
+			return errorf("invoke: window %d of %s is not driven through its bridge", w.Index(), sess.Name)
+		}
+		app, err := sess.TauriApp(ctx)
+		if err != nil {
+			return errResult(err)
+		}
+		cctx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		start := time.Now()
+		raw, err := app.Invoke(cctx, tw.Label(), command, args)
+		if err != nil {
+			if cctx.Err() != nil && ctx.Err() == nil {
+				err = fmt.Errorf("no answer within %s (the command runs on the app's main thread: a long one blocks the UI too)", timeout)
+			}
+			return errResult(fmt.Errorf("invoke %s: %w", command, err))
+		}
+		value := string(raw)
+		var str string
+		if json.Unmarshal(raw, &str) == nil {
+			value = str
+		}
+		return textf("%s → (%s)\n%s", command, time.Since(start).Round(time.Millisecond), value)
+	})
 }
 
 func (s *Server) handleInvoke(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -98,11 +133,14 @@ func (s *Server) handleInvoke(ctx context.Context, req mcpgo.CallToolRequest) (*
 		}
 		args = m
 	}
+	timeout := evalTimeout(req)
+	if sess, err := s.session(req); err == nil && sess.Framework == desktop.FrameworkGPUI {
+		return s.gpuiInvoke(ctx, req, command, args, timeout)
+	}
 	script, err := tauri.InvokeScript(command, args)
 	if err != nil {
 		return errResult(err)
 	}
-	timeout := evalTimeout(req)
 	return s.tauriWindow(ctx, req, "invoke", func(sess *desktop.Session, w driver.Window) (*mcpgo.CallToolResult, error) {
 		start := time.Now()
 		value, err := w.Eval(ctx, script, "", timeout)

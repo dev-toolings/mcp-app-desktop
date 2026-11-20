@@ -1,12 +1,11 @@
-// Package desktop owns the desktop applications an agent drives, Electron
-// or Tauri: it recognises what a target is, launches it (in isolation for
+// Package desktop owns the desktop applications an agent drives, Electron,
+// Tauri or GPUI: it recognises what a target is, launches it (in isolation for
 // Electron) or attaches to it, follows the process tree, keeps its output,
 // reconnects when a development loop restarts it, and guarantees that
 // everything it started is stopped.
 package desktop
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -17,15 +16,17 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/dev-toolings/mcp-app-desktop/internal/tauri"
 	"howett.net/plist"
 )
 
 // Target is a resolved launch target.
 type Target struct {
-	// Framework is FrameworkElectron or FrameworkTauri.
+	// Framework is FrameworkElectron, FrameworkTauri or FrameworkGPUI.
 	Framework string `json:"framework"`
-	// DevCommand is set for a Tauri project: the app is started through
-	// its dev loop (tauri dev), in Dir. Executable is then empty.
+	// DevCommand is set for a Tauri or a GPUI project: the app is started
+	// through its dev loop (tauri dev, cargo run), in Dir. Executable is
+	// then empty.
 	DevCommand []string `json:"dev_command,omitempty"`
 	// Executable is the program started (the Electron binary, or the
 	// Tauri app's own executable).
@@ -52,8 +53,9 @@ func (e *UsageError) Error() string { return e.Msg }
 
 // Resolve identifies what to start for a path: an Electron project directory
 // (package.json + node_modules/electron), a Tauri project (src-tauri with
-// its tauri.conf), a .app bundle built with Electron or Tauri, or an
-// executable of either (inside a bundle or bare).
+// its tauri.conf), a GPUI project (a Cargo package with gpui-mcp-app-desktop),
+// a .app bundle built with any of them, or an executable of any (inside a
+// bundle or bare).
 func Resolve(path string) (*Target, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -79,10 +81,13 @@ func Resolve(path string) (*Target, error) {
 	if st.Mode()&0o111 == 0 && runtime.GOOS != "windows" {
 		return nil, &UsageError{abs + " is not executable"}
 	}
-	if isTauriBinary(abs) {
+	switch binaryFramework(abs) {
+	case FrameworkTauri:
 		return &Target{Framework: FrameworkTauri, Executable: abs, Name: filepath.Base(abs), Evidence: "Tauri runtime scripts in the executable", Packaged: true}, nil
+	case FrameworkGPUI:
+		return &Target{Framework: FrameworkGPUI, Executable: abs, Name: filepath.Base(abs), Evidence: tauri.GPUIBridgeCrate + " in the executable", Packaged: true}, nil
 	}
-	return &Target{Framework: FrameworkElectron, Executable: abs, Name: filepath.Base(abs), Evidence: "bare executable without Tauri markers (assumed Electron: it must accept --remote-debugging-port)", Packaged: true}, nil
+	return &Target{Framework: FrameworkElectron, Executable: abs, Name: filepath.Base(abs), Evidence: "bare executable without Tauri or GPUI bridge markers (assumed Electron: it must accept --remote-debugging-port)", Packaged: true}, nil
 }
 
 func resolveProject(dir string) (*Target, error) {
@@ -90,10 +95,13 @@ func resolveProject(dir string) (*Target, error) {
 		if t, ok, err := resolveTauriProject(dir); ok || err != nil {
 			return t, err
 		}
+		if t, ok, err := resolveGPUIProject(dir); ok || err != nil {
+			return t, err
+		}
 	}
 	raw, err := os.ReadFile(filepath.Join(dir, "package.json"))
 	if err != nil {
-		return nil, &UsageError{"a directory target must be an Electron project (package.json with node_modules/electron), a Tauri project (src-tauri/tauri.conf.json) or a .app bundle"}
+		return nil, &UsageError{"a directory target must be an Electron project (package.json with node_modules/electron), a Tauri project (src-tauri/tauri.conf.json), a GPUI project (Cargo.toml with " + tauri.GPUIBridgeCrate + ") or a .app bundle"}
 	}
 	var pkg struct {
 		Name        string `json:"name"`
@@ -239,32 +247,41 @@ func packageManager(root string) string {
 // embeds.
 var tauriMarker = []byte("__TAURI_INTERNALS__")
 
-// isTauriBinary reports whether an executable embeds the Tauri runtime.
-func isTauriBinary(path string) bool {
-	f, err := os.Open(path)
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-	return containsStream(bufio.NewReaderSize(f, 1<<20), tauriMarker)
-}
-
 // containsStream searches r for needle without reading it whole.
 func containsStream(r io.Reader, needle []byte) bool {
+	return scanMarkers(r, needle)[0]
+}
+
+// scanMarkers searches r for every needle in one pass without reading it
+// whole; found[i] tells whether needles[i] occurs. It stops early once all
+// are found.
+func scanMarkers(r io.Reader, needles ...[]byte) (found []bool) {
+	found = make([]bool, len(needles))
+	longest := 0
+	for _, n := range needles {
+		longest = max(longest, len(n))
+	}
 	buf := make([]byte, 1<<20)
 	var carry []byte
+	left := len(needles)
 	for {
 		n, err := r.Read(buf)
 		if n > 0 {
 			chunk := append(carry, buf[:n]...)
-			if bytes.Contains(chunk, needle) {
-				return true
+			for i, needle := range needles {
+				if !found[i] && bytes.Contains(chunk, needle) {
+					found[i] = true
+					left--
+				}
 			}
-			keep := min(len(needle)-1, len(chunk))
+			if left == 0 {
+				return found
+			}
+			keep := min(max(longest-1, 0), len(chunk))
 			carry = append([]byte(nil), chunk[len(chunk)-keep:]...)
 		}
 		if err != nil {
-			return false
+			return found
 		}
 	}
 }
@@ -319,9 +336,13 @@ func resolveBundle(app string) (*Target, error) {
 		t.Framework, t.Evidence = FrameworkElectron, "Contents/Frameworks/Electron Framework.framework"
 		return t, nil
 	}
-	if isTauriBinary(t.Executable) {
+	switch binaryFramework(t.Executable) {
+	case FrameworkTauri:
 		t.Framework, t.Evidence = FrameworkTauri, "Tauri runtime scripts in Contents/MacOS/"+info.Exe
 		return t, nil
+	case FrameworkGPUI:
+		t.Framework, t.Evidence = FrameworkGPUI, tauri.GPUIBridgeCrate+" in Contents/MacOS/"+info.Exe
+		return t, nil
 	}
-	return nil, &UsageError{app + " is neither an Electron application (no Contents/Frameworks/Electron Framework.framework) nor a Tauri one (no Tauri runtime in its executable)"}
+	return nil, &UsageError{app + " is neither an Electron application (no Contents/Frameworks/Electron Framework.framework), a Tauri one (no Tauri runtime in its executable) nor a GPUI one built with " + tauri.GPUIBridgeCrate + " (" + gpuiBridgeHint + ")"}
 }
