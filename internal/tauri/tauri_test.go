@@ -179,6 +179,63 @@ func TestTypeSubmitPressesEnterInItsOwnCall(t *testing.T) {
 	}
 }
 
+func TestTauriClickPassesModifiersToPageAgent(t *testing.T) {
+	b := tauritest.Start(t, "")
+	b.ClickModifiers = true
+	c, err := tauri.Dial(ctx(t), b.Addr(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	w, err := tauri.NewApp(c, nil).Window(ctx(t), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Click(ctx(t), "button", driver.ClickOptions{Modifiers: []string{"Meta", "Shift", "Alt", "Control"}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, script := range b.Scripts {
+		if strings.Contains(script, `A.run("click",`) && strings.Contains(script, `"modifiers":["Meta","Shift","Alt","Control"]`) {
+			return
+		}
+	}
+	t.Fatal("modified click did not reach the page agent")
+}
+
+func TestClickModifiersRequiresNewBridge(t *testing.T) {
+	for _, tc := range []struct {
+		start func(*testing.T, string) *tauritest.Bridge
+		crate string
+	}{
+		{tauritest.Start, tauri.TauriPluginCrate},
+		{tauritest.StartGPUI, tauri.GPUIBridgeCrate},
+	} {
+		t.Run(tc.crate, func(t *testing.T) {
+			b := tc.start(t, "")
+			c, err := tauri.Dial(ctx(t), b.Addr(), "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			w, err := tauri.NewApp(c, nil).Window(ctx(t), 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := len(b.Commands())
+			if _, err := w.Click(ctx(t), `getByRole("button", { name: "OK" })`, driver.ClickOptions{Modifiers: []string{"Meta"}}); err == nil ||
+				!strings.Contains(err.Error(), "rebuilding the app with a newer "+tc.crate) {
+				t.Fatalf("modified click on old bridge: %v", err)
+			}
+			if len(b.Commands()) != before {
+				t.Fatalf("the rejected click sent a request: %v", b.Commands())
+			}
+			if _, err := w.Click(ctx(t), `getByRole("button", { name: "OK" })`, driver.ClickOptions{Modifiers: []string{}}); err != nil {
+				t.Fatalf("unmodified click on old bridge: %v", err)
+			}
+		})
+	}
+}
+
 func TestIndicesStayWithTheirWindow(t *testing.T) {
 	b := tauritest.Start(t, "")
 	c, err := tauri.Dial(ctx(t), b.Addr(), "")

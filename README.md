@@ -178,6 +178,12 @@ elements; `click` first hovers a per-row button that only shows on `:hover`
 (`hover_first`). `wait_for` with `state: hidden` holds when no element
 matching the target is visible.
 
+Pass `modifiers: ["cmd"]` for Cmd-click or `modifiers: ["shift"]` for
+Shift-click. The list accepts the `press` aliases for Cmd, Ctrl, Shift and Alt
+(including `option`), plus `ControlOrMeta` for Cmd on macOS and Ctrl elsewhere.
+Omit the list or pass `[]` for a plain click. Modified clicks on a GPUI or Tauri
+bridge require rebuilding the app with a crate that advertises support.
+
 ## Launching
 
 The framework comes from the target (`node_modules/electron`, a
@@ -362,7 +368,8 @@ Maestro syntax, desktop subset: `tapOn`, `doubleTapOn`, `inputText`,
 `scrollUntilVisible`, `waitForAnimationToEnd`, `extendedWaitUntil`,
 `takeScreenshot`, `evalJs`, `assertJs`, `evalMain`, `assertMain`,
 `repeat`, `runFlow`. Selectors: text, `role` + `text`, `label`, `id`,
-`css`, `ref`. See [plugin/skills/mcp-app-desktop/references/flows.md](plugin/skills/mcp-app-desktop/references/flows.md)
+`css`, `ref`. Element-based `tapOn` and `doubleTapOn` accept the same
+`modifiers` list as `click`. See [plugin/skills/mcp-app-desktop/references/flows.md](plugin/skills/mcp-app-desktop/references/flows.md)
 and [examples/flows/escape-create-agent.yaml](examples/flows/escape-create-agent.yaml).
 
 CI:

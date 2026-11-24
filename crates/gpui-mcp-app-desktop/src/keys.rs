@@ -20,8 +20,16 @@ pub fn parse(combo: &str) -> Result<Keystroke, String> {
             None => ("", combo),
         }
     };
+    let modifiers = parse_modifiers(mods.split('+').map(str::trim).filter(|m| !m.is_empty()))
+        .map_err(|name| format!("unknown modifier {name:?} in {combo:?} (Control, Shift, Alt, Meta, ControlOrMeta)"))?;
+    let key = key_name(key.trim()).ok_or_else(|| format!("unknown key {key:?} in {combo:?}"))?;
+    Ok(Keystroke { modifiers, key, key_char: None })
+}
+
+/// Parses modifier names, returning the first unrecognised name on failure.
+pub(crate) fn parse_modifiers<'a>(names: impl IntoIterator<Item = &'a str>) -> Result<Modifiers, String> {
     let mut modifiers = Modifiers::default();
-    for m in mods.split('+').map(str::trim).filter(|m| !m.is_empty()) {
+    for m in names {
         match m.to_ascii_lowercase().as_str() {
             "control" | "ctrl" => modifiers.control = true,
             "shift" => modifiers.shift = true,
@@ -34,11 +42,10 @@ pub fn parse(combo: &str) -> Result<Keystroke, String> {
                 }
             }
             "fn" | "function" => modifiers.function = true,
-            other => return Err(format!("unknown modifier {other:?} in {combo:?} (Control, Shift, Alt, Meta, ControlOrMeta)")),
+            other => return Err(other.into()),
         }
     }
-    let key = key_name(key.trim()).ok_or_else(|| format!("unknown key {key:?} in {combo:?}"))?;
-    Ok(Keystroke { modifiers, key, key_char: None })
+    Ok(modifiers)
 }
 
 fn key_name(key: &str) -> Option<String> {

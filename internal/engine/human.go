@@ -77,7 +77,7 @@ func elementCenter(el *rod.Element) (float64, float64, error) {
 // humanMove dispatches a Bézier-shaped sequence of mouseMoved CDP events
 // from the last known cursor position (or the target itself the first time)
 // to (toX, toY). Updates the package-level cursor state.
-func humanMove(page *rod.Page, toX, toY float64) error {
+func humanMove(page *rod.Page, toX, toY float64, modifiers int) error {
 	mouseMu.Lock()
 	fromX, fromY := lastMouseX, lastMouseY
 	if !lastMouseValid {
@@ -118,6 +118,7 @@ func humanMove(page *rod.Page, toX, toY float64) error {
 			Type:        proto.InputDispatchMouseEventTypeMouseMoved,
 			X:           x,
 			Y:           y,
+			Modifiers:   modifiers,
 			PointerType: proto.InputDispatchMouseEventPointerTypeMouse,
 		}
 		if err := ev.Call(page); err != nil {
@@ -143,12 +144,12 @@ func humanHover(page *rod.Page, el *rod.Element) error {
 	if err != nil {
 		return fmt.Errorf("center: %w", err)
 	}
-	return humanMove(page, cx, cy)
+	return humanMove(page, cx, cy, 0)
 }
 
 // humanClick moves to a small random offset around the element center, holds
 // briefly, then dispatches mousePressed / mouseReleased.
-func humanClick(page *rod.Page, el *rod.Element, button proto.InputMouseButton) error {
+func humanClick(page *rod.Page, el *rod.Element, button proto.InputMouseButton, modifiers int) error {
 	if err := ScrollIntoViewNow(el); err != nil {
 		return fmt.Errorf("scroll: %w", err)
 	}
@@ -159,7 +160,7 @@ func humanClick(page *rod.Page, el *rod.Element, button proto.InputMouseButton) 
 	tx := cx + randFloat(-3, 3)
 	ty := cy + randFloat(-3, 3)
 
-	if err := humanMove(page, tx, ty); err != nil {
+	if err := humanMove(page, tx, ty, modifiers); err != nil {
 		return fmt.Errorf("move: %w", err)
 	}
 	sleepRand(40, 120)
@@ -170,6 +171,7 @@ func humanClick(page *rod.Page, el *rod.Element, button proto.InputMouseButton) 
 		Y:           ty,
 		Button:      button,
 		ClickCount:  1,
+		Modifiers:   modifiers,
 		PointerType: proto.InputDispatchMouseEventPointerTypeMouse,
 	}
 	if err := press.Call(page); err != nil {
@@ -182,6 +184,7 @@ func humanClick(page *rod.Page, el *rod.Element, button proto.InputMouseButton) 
 		Y:           ty,
 		Button:      button,
 		ClickCount:  1,
+		Modifiers:   modifiers,
 		PointerType: proto.InputDispatchMouseEventPointerTypeMouse,
 	}
 	if err := release.Call(page); err != nil {

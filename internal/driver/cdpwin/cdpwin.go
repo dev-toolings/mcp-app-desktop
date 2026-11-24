@@ -205,10 +205,15 @@ func (w *Window) Click(ctx context.Context, target string, o driver.ClickOptions
 	if err != nil {
 		return "", err
 	}
-	if o.Count == 2 {
-		return note, engine.DblClickElementWithButton(w.page, el, button)
+	return note, engine.ClickElementWithModifiers(w.page, el, button, o.Count, mouseModifiers(o.Modifiers))
+}
+
+func mouseModifiers(names []string) int {
+	var modifiers int
+	for _, name := range names {
+		modifiers |= rodKeys[name].Modifier()
 	}
-	return note, engine.ClickElementWithButton(w.page, el, button)
+	return modifiers
 }
 
 func (w *Window) ClickAt(ctx context.Context, x, y float64, count int) error {

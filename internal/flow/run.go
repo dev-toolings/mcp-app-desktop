@@ -223,7 +223,7 @@ func (r *Runner) exec(ctx context.Context, s Step, env map[string]string) (detai
 			return fmt.Sprintf("tapped %.0f,%.0f", x, y), "", nil
 		}
 		target := Expand(s.Target, env)
-		if _, err := w.Click(ctx, target, driver.ClickOptions{Count: max(s.Count, 1), Hover: driver.HoverNever, Timeout: r.lookup(s)}); err != nil {
+		if _, err := w.Click(ctx, target, driver.ClickOptions{Count: max(s.Count, 1), Modifiers: s.Modifiers, Hover: driver.HoverNever, Timeout: r.lookup(s)}); err != nil {
 			return "", "", err
 		}
 		r.settle()

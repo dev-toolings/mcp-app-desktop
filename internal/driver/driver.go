@@ -55,10 +55,11 @@ const (
 
 // ClickOptions tune Click.
 type ClickOptions struct {
-	Button  string // left (default), right, middle
-	Count   int    // 1 (default) or 2
-	Hover   HoverMode
-	Timeout time.Duration
+	Button    string   // left (default), right, middle
+	Count     int      // 1 (default) or 2
+	Modifiers []string // DOM modifier names from ParseModifiers
+	Hover     HoverMode
+	Timeout   time.Duration
 }
 
 // TypeOptions tune Type.

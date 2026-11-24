@@ -56,6 +56,9 @@ type Hello struct {
 	Identifier    string `json:"identifier"`
 	PID           int    `json:"pid"`
 	OS            string `json:"os"`
+
+	// ClickModifiers advertises support for modifiers in the click operation.
+	ClickModifiers bool `json:"click_modifiers"`
 }
 
 // maxLine bounds one response line (a full-window PNG in base64 fits).

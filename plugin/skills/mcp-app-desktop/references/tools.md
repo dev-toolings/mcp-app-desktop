@@ -15,7 +15,7 @@ session is. Action tools take `snapshot: diff|full|none`
 | `logs` | `last` (100), `errors`, `contains`, `source`, `since_seconds`, `window` | Sources: console, exception, network, page, main, main-exception, ipc (Tauri commands the page called), stdout, stderr (a GPUI app only has these two) |
 | `stop` | `session`, `keep_artifacts` | Terminates owned app and removes its profile; deletes the session's screenshots and flow outputs unless `keep_artifacts: true` |
 | `snapshot` | `level` skeleton/content/full, `selector` | Header: title, URL, interactive count, errors since previous snapshot |
-| `click` | `target`, `button`, `double`, `hover_first` | Tauri bridge: DOM events, CSS `:hover` cannot apply. | Per-row buttons shown only on `:hover`: omitted, a target hidden by `visibility`/`opacity` is revealed by moving the real mouse over it first; `true` also reveals a `display:none` target by hovering its row; `false` never hovers |
+| `click` | `target`, `button`, `double`, `hover_first`, `modifiers` | Tauri bridge: DOM events, CSS `:hover` cannot apply. Per-row buttons shown only on `:hover`: omitted, a target hidden by `visibility`/`opacity` is revealed by moving the real mouse over it first; `true` also reveals a `display:none` target by hovering its row; `false` never hovers |
 | `type` | `text`, `target`, `append`, `submit` | Without target: focused element |
 | `fill_form` | `fields` (JSON object target → text, or a list of `{target, value}` filled in order) | |
 | `select` | `target`, `values` | Labels or values |
@@ -36,6 +36,12 @@ session is. Action tools take `snapshot: diff|full|none`
 | `emit` | `event`, `payload` (JSON text), `window` | Tauri only. Emits an event to every listener |
 | `trace` | `last` (40), `tool`, `problems`, `since_seconds`, `with_stacks` | Every call's arguments, duration and outcome; use it when a call failed or hung |
 | `run_flow` | `flow` (YAML) or `file`, `env`, `timeout_ms` | See flows.md |
+
+For `click`, pass `modifiers: ["cmd"]` or `modifiers: ["shift"]`. Names are
+case-insensitive: `cmd` / `command` / `meta` / `super` / `win`, `ctrl` /
+`control`, `shift`, and `alt` / `option` / `opt`. `ControlOrMeta` is Cmd on
+macOS and Ctrl elsewhere. Omit the list or pass `[]` for a plain click.
+Older GPUI or Tauri bridges require an app rebuild for modified clicks.
 
 ## Snapshot format
 

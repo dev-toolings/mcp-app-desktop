@@ -28,6 +28,7 @@ pub fn hello<R: Runtime>(app: &AppHandle<R>) -> Result<Value, String> {
   let info = app.package_info();
   Ok(json!({
     "protocol": PROTOCOL,
+    "click_modifiers": true,
     "plugin_version": env!("CARGO_PKG_VERSION"),
     "tauri_version": tauri::VERSION,
     "app_name": info.name,

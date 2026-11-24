@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dev-toolings/mcp-app-desktop/internal/driver"
 	"gopkg.in/yaml.v3"
 )
 
@@ -46,6 +47,8 @@ type Step struct {
 	Text  string
 	Key   string
 	Count int
+	// Modifiers holds DOM modifier names for target-based taps.
+	Modifiers []string
 	// Timeout bounds waits (zero means the command default).
 	Timeout   time.Duration
 	Direction string
@@ -259,6 +262,11 @@ func (p *parser) step(n *yaml.Node) (Step, error) {
 			if v, ok := take(opts, "timeout"); ok {
 				s.Timeout, err = millis(v)
 			}
+			if err == nil && (name == "tapOn" || name == "doubleTapOn") {
+				if v, ok := take(opts, "modifiers"); ok {
+					s.Modifiers, err = tapModifiers(v, s.Point)
+				}
+			}
 		}
 		if s.Point == "" && err == nil {
 			s.Target, err = selector(arg, opts)
@@ -349,6 +357,23 @@ func (p *parser) step(n *yaml.Node) (Step, error) {
 		return s, fmt.Errorf("line %d: %s: unknown option %q", n.Line, name, k)
 	}
 	return s, nil
+}
+
+func tapModifiers(n *yaml.Node, point string) ([]string, error) {
+	if n.Kind != yaml.SequenceNode {
+		return nil, fmt.Errorf("modifiers must be a list of strings")
+	}
+	var names []string
+	for _, item := range n.Content {
+		if item.ShortTag() != "!!str" {
+			return nil, fmt.Errorf("modifiers must be a list of strings")
+		}
+		names = append(names, item.Value)
+	}
+	if point != "" && len(names) > 0 {
+		return nil, fmt.Errorf("modifiers require an element selector")
+	}
+	return driver.ParseModifiers(names)
 }
 
 func (p *parser) runFlow(arg *yaml.Node, opts map[string]*yaml.Node) ([]Step, error) {

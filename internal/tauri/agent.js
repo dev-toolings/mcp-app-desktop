@@ -919,8 +919,8 @@
     return el.closest('a[href],button,input,select,textarea,summary,[tabindex],[contenteditable=""],[contenteditable="true"]');
   }
 
-  function hoverAt(el, x, y) {
-    var init = mouseInit(el, x, y, 0, 0, 0);
+  function hoverAt(el, x, y, mods) {
+    var init = mouseInit(el, x, y, 0, 0, 0, mods);
     fire(el, 'pointerover', init, 'PointerEvent');
     fire(el, 'pointerenter', Object.assign({}, init, { bubbles: false }), 'PointerEvent');
     fire(el, 'mouseover', init);
@@ -931,13 +931,13 @@
 
   var BUTTONS = { left: [0, 1], middle: [1, 4], right: [2, 2] };
 
-  function clickEl(el, button, count) {
+  function clickEl(el, button, count, mods) {
     var c = center(el);
     var b = BUTTONS[button] || BUTTONS.left;
-    hoverAt(el, c.x, c.y);
+    hoverAt(el, c.x, c.y, mods);
     for (var i = 1; i <= count; i++) {
-      var down = mouseInit(el, c.x, c.y, b[0], b[1], i);
-      var up = mouseInit(el, c.x, c.y, b[0], 0, i);
+      var down = mouseInit(el, c.x, c.y, b[0], b[1], i, mods);
+      var up = mouseInit(el, c.x, c.y, b[0], 0, i, mods);
       fire(el, 'pointerdown', down, 'PointerEvent');
       var focusOk = fire(el, 'mousedown', down);
       if (focusOk && i === 1) {
@@ -955,7 +955,7 @@
         fire(el, 'auxclick', up);
       }
     }
-    if (count === 2 && (button === 'left' || !button)) fire(el, 'dblclick', mouseInit(el, c.x, c.y, 0, 0, 2));
+    if (count === 2 && (button === 'left' || !button)) fire(el, 'dblclick', mouseInit(el, c.x, c.y, 0, 0, 2, mods));
   }
 
   function clickAt(x, y, count) {
@@ -1144,13 +1144,18 @@
     return a || doc.body;
   }
 
+  function modifierFlags(names) {
+    var mods = {};
+    names.forEach(function (m) {
+      mods[m] = true;
+    });
+    return mods;
+  }
+
   // press dispatches one key combination to el (the focused element) and
   // performs the default action a keyboard would when nothing prevented it.
   function press(el, combo) {
-    var mods = {};
-    combo.mods.forEach(function (m) {
-      mods[m] = true;
-    });
+    var mods = modifierFlags(combo.mods);
     var key = combo.key;
     var init = keyInit(key, mods);
     var doc = el.ownerDocument;
@@ -1397,7 +1402,7 @@
         }
         case 'click': {
           var a = actionable(args.loc, { reveal: args.reveal });
-          clickEl(a.el, args.button, args.count);
+          clickEl(a.el, args.button, args.count, modifierFlags(args.modifiers || []));
           return { note: a.note };
         }
         case 'clickAt':

@@ -59,11 +59,19 @@ func ClickElement(page *rod.Page, el *rod.Element) error {
 
 // ClickElementWithButton performs a click with an explicit mouse button.
 func ClickElementWithButton(page *rod.Page, el *rod.Element, button proto.InputMouseButton) error {
+	return ClickElementWithModifiers(page, el, button, 1, 0)
+}
+
+// ClickElementWithModifiers clicks an already-resolved element with a CDP modifier mask.
+func ClickElementWithModifiers(page *rod.Page, el *rod.Element, button proto.InputMouseButton, count, modifiers int) error {
+	if count == 2 {
+		return dblClickElementWithButton(page, el, button, modifiers)
+	}
 	if err := EnsureActionable(el, actionBudget(page)); err != nil {
 		return fmt.Errorf("click: %w", err)
 	}
 	if HumanMode() {
-		if err := humanClick(page, el, button); err != nil {
+		if err := humanClick(page, el, button, modifiers); err != nil {
 			return fmt.Errorf("click: %w", err)
 		}
 		settleAfterAction(page, 0)
@@ -71,7 +79,7 @@ func ClickElementWithButton(page *rod.Page, el *rod.Element, button proto.InputM
 		WaitForClickDownload(page)
 		return nil
 	}
-	if err := clickActionableElement(page, el, button); err != nil {
+	if err := clickActionableElement(page, el, button, modifiers); err != nil {
 		return fmt.Errorf("click: %w", err)
 	}
 	settleAfterAction(page, 0)
@@ -85,14 +93,14 @@ func ClickElementWithButton(page *rod.Page, el *rod.Element, button proto.InputM
 // with the bundled Chromium on macOS ARM, while HTMLElement.click preserves
 // the link's normal navigation semantics. Other controls keep a real input
 // event, including file inputs and non-left mouse buttons.
-func clickActionableElement(page *rod.Page, el *rod.Element, button proto.InputMouseButton) error {
+func clickActionableElement(page *rod.Page, el *rod.Element, button proto.InputMouseButton, modifiers int) error {
 	elPage := el.Page()
-	if button == proto.InputMouseButtonLeft && page != nil && elPage != nil &&
+	if modifiers == 0 && button == proto.InputMouseButtonLeft && page != nil && elPage != nil &&
 		elPage.FrameID != "" && elPage.FrameID != page.FrameID && ClickNavHint(elPage) {
 		_, err := el.Eval(`() => this.click()`)
 		return err
 	}
-	return boundedClick(page, el, button, 1)
+	return boundedClick(page, el, button, 1, modifiers)
 }
 
 // boundedClick is rod's Click within the action budget. Rod waits for the element to stop being
@@ -102,11 +110,11 @@ func clickActionableElement(page *rod.Page, el *rod.Element, button proto.InputM
 // reach: in a hidden or occluded window no frame comes, and a click announced « 8s » took 199 s
 // (trace, 2026-10-22). So every step here is a CDP call on the bounded context: scroll, the
 // interactable point, then real mouse events. Past the budget the error names what covers the element.
-func boundedClick(page *rod.Page, el *rod.Element, button proto.InputMouseButton, count int) error {
+func boundedClick(page *rod.Page, el *rod.Element, button proto.InputMouseButton, count, modifiers int) error {
 	budget := actionBudget(page)
 	ctx, cancel := context.WithTimeout(el.GetContext(), budget)
 	defer cancel()
-	err := clickWithin(ctx, page, el.Context(ctx), button, count)
+	err := clickWithin(ctx, page, el.Context(ctx), button, count, modifiers)
 	if err == nil || ctx.Err() == nil {
 		return err
 	}
@@ -140,7 +148,7 @@ func coveredBySelf(el *rod.Element, err error) (*proto.Point, bool) {
 	return pt, true
 }
 
-func clickWithin(ctx context.Context, page *rod.Page, el *rod.Element, button proto.InputMouseButton, count int) error {
+func clickWithin(ctx context.Context, page *rod.Page, el *rod.Element, button proto.InputMouseButton, count, modifiers int) error {
 	target := el.Page()
 	if target == nil {
 		target = page
@@ -150,15 +158,19 @@ func clickWithin(ctx context.Context, page *rod.Page, el *rod.Element, button pr
 	if err != nil {
 		return err
 	}
-	if err := (proto.InputDispatchMouseEvent{Type: proto.InputDispatchMouseEventTypeMouseMoved, X: point.X, Y: point.Y}).Call(target); err != nil {
+	return dispatchClick(target, *point, button, count, modifiers)
+}
+
+func dispatchClick(target proto.Client, point proto.Point, button proto.InputMouseButton, count, modifiers int) error {
+	if err := (proto.InputDispatchMouseEvent{Type: proto.InputDispatchMouseEventTypeMouseMoved, X: point.X, Y: point.Y, Modifiers: modifiers}).Call(target); err != nil {
 		return err
 	}
 	buttons := map[proto.InputMouseButton]int{proto.InputMouseButtonLeft: 1, proto.InputMouseButtonRight: 2, proto.InputMouseButtonMiddle: 4}[button]
 	for n := 1; n <= count; n++ {
-		if err := (proto.InputDispatchMouseEvent{Type: proto.InputDispatchMouseEventTypeMousePressed, X: point.X, Y: point.Y, Button: button, Buttons: gson.Int(buttons), ClickCount: n}).Call(target); err != nil {
+		if err := (proto.InputDispatchMouseEvent{Type: proto.InputDispatchMouseEventTypeMousePressed, X: point.X, Y: point.Y, Button: button, Buttons: gson.Int(buttons), ClickCount: n, Modifiers: modifiers}).Call(target); err != nil {
 			return err
 		}
-		if err := (proto.InputDispatchMouseEvent{Type: proto.InputDispatchMouseEventTypeMouseReleased, X: point.X, Y: point.Y, Button: button, Buttons: gson.Int(0), ClickCount: n}).Call(target); err != nil {
+		if err := (proto.InputDispatchMouseEvent{Type: proto.InputDispatchMouseEventTypeMouseReleased, X: point.X, Y: point.Y, Button: button, Buttons: gson.Int(0), ClickCount: n, Modifiers: modifiers}).Call(target); err != nil {
 			return err
 		}
 	}
@@ -202,7 +214,7 @@ func hoverWithin(ctx context.Context, page *rod.Page, el *rod.Element) error {
 
 // DblClickElementWithButton double-clicks an already-resolved element.
 func DblClickElementWithButton(page *rod.Page, el *rod.Element, button proto.InputMouseButton) error {
-	return dblClickElementWithButton(page, el, button)
+	return dblClickElementWithButton(page, el, button, 0)
 }
 
 // DblClickRef double-clicks the element at the given ref.
@@ -213,26 +225,26 @@ func DblClickRef(page *rod.Page, ref string, snapshot *PageSnapshot) error {
 // DblClickRefWithButton double-clicks an element with an explicit mouse button.
 func DblClickRefWithButton(page *rod.Page, ref string, snapshot *PageSnapshot, button proto.InputMouseButton) error {
 	return withSemanticRetry(page, ref, snapshot, func(el *rod.Element) error {
-		return dblClickElementWithButton(page, el, button)
+		return DblClickElementWithButton(page, el, button)
 	})
 }
 
-func dblClickElementWithButton(page *rod.Page, el *rod.Element, button proto.InputMouseButton) error {
+func dblClickElementWithButton(page *rod.Page, el *rod.Element, button proto.InputMouseButton, modifiers int) error {
 	if err := EnsureActionable(el, actionBudget(page)); err != nil {
 		return fmt.Errorf("dblclick: %w", err)
 	}
 	if HumanMode() {
-		if err := humanClick(page, el, button); err != nil {
+		if err := humanClick(page, el, button, modifiers); err != nil {
 			return fmt.Errorf("dblclick: %w", err)
 		}
 		sleepRand(40, 80)
-		if err := humanClick(page, el, button); err != nil {
+		if err := humanClick(page, el, button, modifiers); err != nil {
 			return fmt.Errorf("dblclick: %w", err)
 		}
 		settleAfterAction(page, 0)
 		return nil
 	}
-	if err := boundedClick(page, el, button, 2); err != nil {
+	if err := boundedClick(page, el, button, 2, modifiers); err != nil {
 		return fmt.Errorf("dblclick: %w", err)
 	}
 	settleAfterAction(page, 0)
@@ -417,7 +429,7 @@ func TypeElement(page *rod.Page, el *rod.Element, text string) error {
 		return fmt.Errorf("type: %w", err)
 	}
 	if HumanMode() {
-		if err := humanClick(page, el, proto.InputMouseButtonLeft); err != nil {
+		if err := humanClick(page, el, proto.InputMouseButtonLeft, 0); err != nil {
 			return fmt.Errorf("focus-click: %w", err)
 		}
 		if err := FocusElement(el); err != nil {
@@ -444,7 +456,7 @@ func TypeElement(page *rod.Page, el *rod.Element, text string) error {
 	// deliver them in): the click would spend the whole budget. Focus and
 	// selection above and below do not need it.
 	if !documentHidden(bel) {
-		_ = boundedClick(page, el, proto.InputMouseButtonLeft, 3)
+		_ = boundedClick(page, el, proto.InputMouseButtonLeft, 3, 0)
 	}
 	_ = selectAllNow(bel)
 	if err := bpage.InsertText(text); err != nil {

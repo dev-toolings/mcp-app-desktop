@@ -53,10 +53,11 @@ func (s *Server) pageTools() []toolDef {
 			mcpgo.WithString("selector", mcpgo.Description("CSS selector scoping the extraction to one subtree.")),
 			mcpgo.WithTitleAnnotation("Snapshot window"), mcpgo.WithReadOnlyHintAnnotation(true),
 		), (*Server).handleSnapshot, ""},
-		{action("click", "Click an element after it is visible, enabled and not covered: real mouse events at its centre (Electron, Tauri on Windows), or the same DOM events dispatched to it (Tauri bridge, which cannot apply CSS :hover: a button that only shows on hover is clicked while still transparent). Per-row buttons that only appear on hover are revealed by hovering first (see hover_first).",
+		{action("click", "Click an element after it is visible, enabled and not covered: real mouse events at its centre (Electron, Tauri on Windows, GPUI), or the same DOM events dispatched to it (Tauri bridge, which cannot apply CSS :hover: a button that only shows on hover is clicked while still transparent). Per-row buttons that only appear on hover are revealed by hovering first (see hover_first). Hold modifier keys with modifiers, e.g. [\"cmd\"] or [\"shift\"].",
 			mcpgo.WithString("target", mcpgo.Required(), mcpgo.Description(targetDesc)),
 			mcpgo.WithString("button", mcpgo.Enum("left", "right", "middle"), mcpgo.DefaultString("left")),
 			mcpgo.WithBoolean("double", mcpgo.Description("Double-click."), mcpgo.DefaultBool(false)),
+			mcpgo.WithArray("modifiers", mcpgo.Description("Keys held during the click: cmd, ctrl, shift, alt (option) and their press aliases, or ControlOrMeta (Cmd on macOS, Ctrl elsewhere)."), mcpgo.WithStringItems()),
 			mcpgo.WithBoolean("hover_first", mcpgo.Description("Buttons shown only on hover (CSS :hover on a row). Omitted: a target hidden by visibility or opacity is revealed by moving the real mouse over it first. true: always hover first, and reveal a display:none target by hovering its nearest rendered ancestor (the row). false: never hover; the target must already be visible.")),
 			mcpgo.WithTitleAnnotation("Click"),
 		), (*Server).handleClick, ""},
@@ -260,6 +261,17 @@ func (s *Server) handleClick(ctx context.Context, req mcpgo.CallToolRequest) (*m
 	if err != nil {
 		return errResult(err)
 	}
+	var modifiers []string
+	if req.GetArguments()["modifiers"] != nil {
+		names, err := req.RequireStringSlice("modifiers")
+		if err != nil {
+			return errResult(err)
+		}
+		modifiers, err = driver.ParseModifiers(names)
+		if err != nil {
+			return errResult(err)
+		}
+	}
 	double := mcpgo.ParseBoolean(req, "double", false)
 	hover := parseHoverMode(req)
 	mode, err := snapshotMode(req)
@@ -276,7 +288,7 @@ func (s *Server) handleClick(ctx context.Context, req mcpgo.CallToolRequest) (*m
 		summary := func() string { return fmt.Sprintf("%s %s%s", verb, target, note) }
 		return mutateWith(ctx, w, mode, summary, func() error {
 			var err error
-			note, err = w.Click(ctx, target, driver.ClickOptions{Button: button, Count: count, Hover: hover, Timeout: timeout})
+			note, err = w.Click(ctx, target, driver.ClickOptions{Button: button, Count: count, Modifiers: modifiers, Hover: hover, Timeout: timeout})
 			return err
 		})
 	})

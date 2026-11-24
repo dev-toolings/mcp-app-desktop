@@ -2,6 +2,9 @@ package driver
 
 import (
 	"fmt"
+	"maps"
+	"runtime"
+	"slices"
 	"strings"
 )
 
@@ -31,6 +34,34 @@ var modifierKeys = map[string]string{
 	"shift": "Shift",
 }
 
+func lookupModifier(name string) (string, bool) {
+	m, ok := modifierKeys[strings.ToLower(strings.TrimSpace(name))]
+	return m, ok
+}
+
+// ParseModifiers returns DOM modifier names. ControlOrMeta follows the GPUI
+// shortcut convention: Meta on macOS, Control elsewhere.
+func ParseModifiers(names []string) ([]string, error) {
+	var mods []string
+	for _, name := range names {
+		m, ok := lookupModifier(name)
+		if strings.EqualFold(strings.TrimSpace(name), "ControlOrMeta") {
+			m, ok = "Control", true
+			if runtime.GOOS == "darwin" {
+				m = "Meta"
+			}
+		}
+		if !ok {
+			accepted := append(slices.Sorted(maps.Keys(modifierKeys)), "ControlOrMeta")
+			return nil, fmt.Errorf("unknown modifier %q: use %s", name, strings.Join(accepted, ", "))
+		}
+		if !slices.Contains(mods, m) {
+			mods = append(mods, m)
+		}
+	}
+	return mods, nil
+}
+
 // ParseCombo turns "cmd+shift+p", "Enter" or "a" into modifiers and a key.
 func ParseCombo(combo string) (Combo, error) {
 	var c Combo
@@ -43,15 +74,15 @@ func ParseCombo(combo string) (Combo, error) {
 		parts = append(parts[:len(parts)-2], "+")
 	}
 	for i, p := range parts {
-		name := strings.ToLower(strings.TrimSpace(p))
 		if i < len(parts)-1 {
-			m, ok := modifierKeys[name]
+			m, ok := lookupModifier(p)
 			if !ok {
 				return Combo{}, fmt.Errorf("unknown modifier %q in %q (cmd, ctrl, alt, shift)", p, combo)
 			}
 			c.Mods = append(c.Mods, m)
 			continue
 		}
+		name := strings.ToLower(strings.TrimSpace(p))
 		if k, ok := namedKeys[name]; ok {
 			c.Key = k
 			continue

@@ -21,6 +21,8 @@ import (
 type Bridge struct {
 	Token    string
 	Protocol int
+	// ClickModifiers enables the hello capability for modified clicks.
+	ClickModifiers bool
 	// Labels are the webviews it reports (default: main).
 	Labels []string
 	// Snapshot is the agent's answer to a snapshot (JSON).
@@ -171,10 +173,10 @@ func (b *Bridge) handle(c net.Conn) {
 			}
 			authed = true
 			if b.Framework == "gpui" {
-				ok(map[string]any{"protocol": b.Protocol, "framework": "gpui", "plugin_version": "0.0.0-fake", "app_name": "Fake GPUI", "pid": 4343, "os": "macos", "capture": true})
+				ok(map[string]any{"protocol": b.Protocol, "framework": "gpui", "plugin_version": "0.0.0-fake", "app_name": "Fake GPUI", "pid": 4343, "os": "macos", "capture": true, "click_modifiers": b.ClickModifiers})
 				break
 			}
-			ok(map[string]any{"protocol": b.Protocol, "plugin_version": "0.0.0-fake", "tauri_version": "2.0.0", "app_name": "Fake App", "app_version": "1.0.0", "identifier": "dev.fake", "pid": 4242, "os": "macos"})
+			ok(map[string]any{"protocol": b.Protocol, "plugin_version": "0.0.0-fake", "tauri_version": "2.0.0", "app_name": "Fake App", "app_version": "1.0.0", "identifier": "dev.fake", "pid": 4242, "os": "macos", "click_modifiers": b.ClickModifiers})
 		case "ping":
 			ok(map[string]any{})
 		case "windows":

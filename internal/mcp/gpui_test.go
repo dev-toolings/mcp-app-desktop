@@ -82,6 +82,48 @@ func TestGPUIToolsOverAFakeBridge(t *testing.T) {
 	}
 }
 
+func TestClickAndFlowModifiersOverGPUIBridge(t *testing.T) {
+	b := tauritest.StartGPUI(t, "")
+	b.ClickModifiers = true
+	b.Agent = func(_ string, op string, args map[string]any) any {
+		if op != "click" {
+			return map[string]any{}
+		}
+		mods, _ := args["modifiers"].([]any)
+		count := args["count"]
+		if (count == float64(1) && slices.Equal(mods, []any{"Meta", "Alt"})) ||
+			(count == float64(2) && slices.Equal(mods, []any{"Shift"})) {
+			return map[string]any{}
+		}
+		return map[string]any{"code": "invalid", "error": "wrong click count or modifiers"}
+	}
+
+	s, err := New(Options{ArtifactsRoot: t.TempDir(), Version: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	s.Build()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c := toolCaller{t: t, s: s, ctx: ctx}
+	c.ok("attach", map[string]any{"endpoint": b.Addr()})
+	c.ok("click", map[string]any{"target": "@1", "modifiers": []any{"cmd", "option"}, "snapshot": "none"})
+	c.ok("run_flow", map[string]any{"flow": `- doubleTapOn: { ref: "@1", modifiers: [shift] }`})
+	for _, tc := range []struct {
+		input any
+		want  string
+	}{
+		{[]any{"hyper"}, `unknown modifier "hyper"`},
+		{[]any{42}, "is not a string"},
+		{"cmd", "is not a string slice"},
+	} {
+		if got := c.fails("click", map[string]any{"target": "@1", "modifiers": tc.input}); !strings.Contains(got, tc.want) {
+			t.Errorf("modifiers %v: %s", tc.input, got)
+		}
+	}
+}
+
 // gpuiApp returns the GPUI binary named by MCP_APP_DESKTOP_E2E_GPUI, or skips.
 func gpuiApp(t *testing.T) string {
 	t.Helper()

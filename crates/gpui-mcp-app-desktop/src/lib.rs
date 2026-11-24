@@ -178,6 +178,7 @@ pub(crate) fn hello() -> Value {
         .unwrap_or_default();
     json!({
         "protocol": PROTOCOL,
+        "click_modifiers": true,
         "framework": "gpui",
         "plugin_version": env!("CARGO_PKG_VERSION"),
         "app_name": app_name,

@@ -20,6 +20,7 @@ env:
 - tapOn: { label: "Email" }
 - tapOn: { ref: "@4" }                 # from the last snapshot
 - doubleTapOn: { text: "title" }
+- tapOn: { text: "Next row", modifiers: ["shift"] }
 - tapOn: { point: "50%,90%" }          # viewport percentages or CSS pixels
 - pressKey: cmd+k                      # Enter, Escape, Tab, ArrowDown, shift+Tab…
 - eraseText: 3
@@ -46,6 +47,10 @@ rejected at parse time with a hint.
 Selector keys supported: `text`, `role` (+`text`), `label`, `id`, `css`,
 `ref`. Not supported: `index`, state filters (`enabled`, `checked`…) and
 relative positions (`below`, `above`…): use a CSS selector or a ref instead.
+
+Element-based `tapOn` and `doubleTapOn` accept `modifiers` with the same
+names as [`click`](tools.md). A coordinate `point` tap accepts only an empty
+modifier list.
 
 CI: `mcp-app-desktop run-flow flow.yaml --target ./app --env APP_DATA=$(mktemp -d)`
 exits 1 on failure and prints the step table.

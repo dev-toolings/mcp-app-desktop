@@ -11,6 +11,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use gpui::{
     point, px, AnyWindowHandle, App, AsyncApp, Global, KeyUpEvent, Keystroke, Modifiers, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, PlatformInput, ScrollDelta, ScrollEvent, TouchPhase, Window,
+    ModifiersChangedEvent, Pixels, Point,
 };
 use serde_json::{json, Map, Value};
 
@@ -448,7 +449,7 @@ fn focus_target(label: &str, args: &Value, need_enabled: bool, window: &mut Wind
         return Ok(false);
     }
     let (x, y) = page.click_point(n).ok_or_else(|| fail("hidden", format!("{} is not visible", n.describe())))?;
-    click_at(window, cx, x, y, MouseButton::Left, 1);
+    click_at(window, cx, x, y, MouseButton::Left, 1, Modifiers::default());
     Ok(true)
 }
 
@@ -551,6 +552,7 @@ fn dispatch(label: &str, op: &str, args: &Value, window: &mut Window, cx: &mut A
             Ok(json!({ "ok": page.flat.iter().any(|n| n.name.contains(&want) || n.value.contains(&want)) }))
         }
         "click" => {
+            let modifiers = click_modifiers(args.get("modifiers"))?;
             let page = Page::read(window)?;
             let n = actionable(label, &page, loc(args, "loc")?, true, cx)?;
             let button = match s("button").as_str() {
@@ -560,12 +562,12 @@ fn dispatch(label: &str, op: &str, args: &Value, window: &mut Window, cx: &mut A
             };
             let count = args.get("count").and_then(Value::as_u64).unwrap_or(1).max(1) as usize;
             let (x, y) = point_of(&page, n)?;
-            click_at(window, cx, x, y, button, count);
+            click_at(window, cx, x, y, button, count, modifiers);
             Ok(json!({ "note": "" }))
         }
         "clickAt" => {
             let count = args.get("count").and_then(Value::as_u64).unwrap_or(1).max(1) as usize;
-            click_at(window, cx, f("x"), f("y"), MouseButton::Left, count);
+            click_at(window, cx, f("x"), f("y"), MouseButton::Left, count, Modifiers::default());
             Ok(json!({}))
         }
         "type" => {
@@ -574,7 +576,7 @@ fn dispatch(label: &str, op: &str, args: &Value, window: &mut Window, cx: &mut A
                 let n = actionable(label, &page, loc(args, "loc")?, false, cx)?;
                 if !n.focused {
                     let (x, y) = point_of(&page, n)?;
-                    click_at(window, cx, x, y, MouseButton::Left, 1);
+                    click_at(window, cx, x, y, MouseButton::Left, 1, Modifiers::default());
                 }
             }
             let append = args.get("append").and_then(Value::as_bool).unwrap_or(false);
@@ -597,7 +599,7 @@ fn dispatch(label: &str, op: &str, args: &Value, window: &mut Window, cx: &mut A
                 let n = actionable(label, &page, loc(args, "loc")?, false, cx)?;
                 if !n.focused {
                     let (x, y) = point_of(&page, n)?;
-                    click_at(window, cx, x, y, MouseButton::Left, 1);
+                    click_at(window, cx, x, y, MouseButton::Left, 1, Modifiers::default());
                 }
             }
             let combo = args.get("combo").ok_or_else(|| fail("invalid", "press needs a combo"))?;
@@ -696,31 +698,84 @@ fn dispatch(label: &str, op: &str, args: &Value, window: &mut Window, cx: &mut A
 
 fn mouse_move(window: &mut Window, cx: &mut App, x: f64, y: f64, pressed: Option<MouseButton>) {
     window.dispatch_event(
-        PlatformInput::MouseMove(MouseMoveEvent {
-            position: point(px(x as f32), px(y as f32)),
-            pressed_button: pressed,
-            modifiers: Modifiers::default(),
-        }),
+        mouse_move_event(point(px(x as f32), px(y as f32)), pressed, Modifiers::default()),
         cx,
     );
 }
 
-fn click_at(window: &mut Window, cx: &mut App, x: f64, y: f64, button: MouseButton, count: usize) {
-    let position = point(px(x as f32), px(y as f32));
-    mouse_move(window, cx, x, y, None);
-    for click_count in 1..=count {
-        window.dispatch_event(
+fn mouse_move_event(
+    position: Point<Pixels>,
+    pressed_button: Option<MouseButton>,
+    modifiers: Modifiers,
+) -> PlatformInput {
+    PlatformInput::MouseMove(MouseMoveEvent {
+        position,
+        pressed_button,
+        modifiers,
+    })
+}
+
+fn click_modifiers(value: Option<&Value>) -> Result<Modifiers, Fail> {
+    let Some(value) = value else {
+        return Ok(Modifiers::default());
+    };
+    let invalid = || fail("invalid", "click: modifiers must be an array of strings");
+    let names = value.as_array().ok_or_else(invalid)?;
+    let names = names
+        .iter()
+        .map(|name| name.as_str().ok_or_else(invalid))
+        .collect::<Result<Vec<_>, _>>()?;
+    crate::keys::parse_modifiers(names).map_err(|name| {
+        fail("invalid", format!("unknown modifier {name:?} (Control/ctrl, Shift, Alt/option/opt, Meta/cmd/command/super, ControlOrMeta, fn/function)"))
+    })
+}
+
+fn click_events(
+    position: Point<Pixels>,
+    button: MouseButton,
+    count: usize,
+    modifiers: Modifiers,
+) -> impl Iterator<Item = PlatformInput> {
+    let clicks = (1..=count).flat_map(move |click_count| {
+        [
             PlatformInput::MouseDown(MouseDownEvent {
                 button,
                 position,
-                modifiers: Modifiers::default(),
+                modifiers,
                 click_count,
                 first_mouse: false,
             }),
-            cx,
-        );
+            PlatformInput::MouseUp(MouseUpEvent {
+                button,
+                position,
+                modifiers,
+                click_count,
+            }),
+        ]
+    });
+    std::iter::once(mouse_move_event(position, None, modifiers)).chain(clicks)
+}
+
+fn click_at(
+    window: &mut Window,
+    cx: &mut App,
+    x: f64,
+    y: f64,
+    button: MouseButton,
+    count: usize,
+    modifiers: Modifiers,
+) {
+    let previous_modifiers = window.modifiers();
+    for event in click_events(point(px(x as f32), px(y as f32)), button, count, modifiers) {
+        window.dispatch_event(event, cx);
+    }
+    // GPUI stores the modifiers from each mouse event on the window.
+    if modifiers.modified() && window.modifiers() != previous_modifiers {
         window.dispatch_event(
-            PlatformInput::MouseUp(MouseUpEvent { button, position, modifiers: Modifiers::default(), click_count }),
+            PlatformInput::ModifiersChanged(ModifiersChangedEvent {
+                modifiers: previous_modifiers,
+                capslock: window.capslock(),
+            }),
             cx,
         );
     }
@@ -1385,7 +1440,58 @@ fn state(label: &str, page: &Page, l: Loc, want: &str, cx: &mut App) -> Out {
 
 #[cfg(test)]
 mod tests {
-    use super::{aria_role, collapse, Flat, Page};
+    use super::{aria_role, click_events, click_modifiers, collapse, Flat, Page};
+    use gpui::{point, px, Modifiers, MouseButton, PlatformInput};
+    use serde_json::json;
+
+    #[test]
+    fn click_events_carry_modifiers() {
+        let names = json!(["cmd", "Shift", "option", "Control"]);
+        let modifiers = click_modifiers(Some(&names)).map_err(|err| err.msg).unwrap();
+        assert_eq!(
+            modifiers,
+            Modifiers {
+                platform: true,
+                shift: true,
+                alt: true,
+                control: true,
+                ..Default::default()
+            }
+        );
+        let position = point(px(12.), px(34.));
+        let mut events = click_events(position, MouseButton::Left, 2, modifiers);
+        let Some(PlatformInput::MouseMove(event)) = events.next() else {
+            panic!("expected mouse move");
+        };
+        assert_eq!(event.modifiers, modifiers);
+        for count in 1..=2 {
+            let Some(PlatformInput::MouseDown(event)) = events.next() else {
+                panic!("expected mouse down");
+            };
+            assert_eq!(event.modifiers, modifiers);
+            assert_eq!(event.click_count, count);
+            let Some(PlatformInput::MouseUp(event)) = events.next() else {
+                panic!("expected mouse up");
+            };
+            assert_eq!(event.modifiers, modifiers);
+            assert_eq!(event.click_count, count);
+        }
+        assert!(events.next().is_none());
+    }
+
+    #[test]
+    fn click_modifiers_validate_the_optional_array() {
+        let empty = json!([]);
+        for value in [None, Some(&empty)] {
+            assert_eq!(
+                click_modifiers(value).map_err(|err| err.msg).unwrap(),
+                Modifiers::default()
+            );
+        }
+        for value in [json!("cmd"), json!([42]), json!(["hyper"])] {
+            assert!(click_modifiers(Some(&value)).is_err());
+        }
+    }
 
     fn node(index: usize, end: usize, x: f64, y: f64, w: f64, h: f64) -> Flat {
         Flat {

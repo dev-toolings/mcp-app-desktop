@@ -392,7 +392,7 @@ func (s *PageSession) DblClick(ref string, snapshot *PageSnapshot, button proto.
 		return errors.New("page session is closed")
 	}
 	return withSemanticRetry(s.page, ref, snapshot, func(el *rod.Element) error {
-		return dblClickElementWithButton(s.page, el, button)
+		return DblClickElementWithButton(s.page, el, button)
 	})
 }
 

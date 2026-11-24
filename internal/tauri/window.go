@@ -222,10 +222,17 @@ func (w *Window) Click(ctx context.Context, target string, o driver.ClickOptions
 	if button == "" {
 		button = "left"
 	}
+	args := map[string]any{"loc": l, "button": button, "count": max(o.Count, 1), "reveal": o.Hover != driver.HoverNever}
+	if len(o.Modifiers) > 0 {
+		if !w.app.c.Hello.ClickModifiers {
+			return "", fmt.Errorf("click with modifiers requires rebuilding the app with a newer %s crate", w.app.c.BridgeCrate())
+		}
+		args["modifiers"] = o.Modifiers
+	}
 	var res struct {
 		Note string `json:"note"`
 	}
-	err = w.act(ctx, o.Timeout, target, "click", map[string]any{"loc": l, "button": button, "count": max(o.Count, 1), "reveal": o.Hover != driver.HoverNever}, &res)
+	err = w.act(ctx, o.Timeout, target, "click", args, &res)
 	return res.Note, err
 }
 
